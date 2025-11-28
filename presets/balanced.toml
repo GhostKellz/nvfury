@@ -1,0 +1,19 @@
+# nvfury Balanced Preset
+# Good performance with reasonable efficiency
+
+[module]
+UsePageAttributeTable = true
+EnablePCIeGen3 = true
+EnableMSI = true
+PreserveVideoMemoryAllocations = true
+
+# Coarse-grained power management for better efficiency
+DynamicPowerManagement = 0x01
+
+TemporaryFilePath = "/tmp"
+InitializeSystemMemoryAllocations = false
+
+[build]
+OptLevel = "O2"
+LTO = true
+MarchNative = true

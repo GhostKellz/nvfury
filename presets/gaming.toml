@@ -1,0 +1,35 @@
+# nvfury Gaming Preset
+# Maximum performance, lowest latency
+
+[module]
+# Enable Page Attribute Table for better memory performance
+UsePageAttributeTable = true
+
+# Force PCIe Gen3+ for maximum bandwidth
+EnablePCIeGen3 = true
+
+# Enable Message Signaled Interrupts
+EnableMSI = true
+
+# Preserve video memory across suspend/resume
+PreserveVideoMemoryAllocations = true
+
+# Fine-grained dynamic power management
+# 0x00 = disabled, 0x01 = coarse, 0x02 = fine
+DynamicPowerManagement = 0x02
+
+# Use fast temp storage
+TemporaryFilePath = "/tmp"
+
+# Don't initialize system memory allocations (faster)
+InitializeSystemMemoryAllocations = false
+
+[build]
+# Optimization level
+OptLevel = "O3"
+
+# Enable Link-Time Optimization
+LTO = true
+
+# Use native CPU instruction set
+MarchNative = true

@@ -1,0 +1,13 @@
+.{
+    .name = .nvfury,
+    .version = "0.1.0",
+    .fingerprint = 0x8d090a6e5789e8ba,
+    .minimum_zig_version = "0.14.0",
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+        "patches",
+        "presets",
+    },
+}

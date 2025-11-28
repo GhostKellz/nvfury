@@ -1,0 +1,27 @@
+# nvfury Quiet Preset
+# Power saving, reduced heat and fan noise
+
+[module]
+UsePageAttributeTable = true
+
+# Allow lower PCIe speeds for power saving
+EnablePCIeGen3 = false
+
+EnableMSI = true
+
+# Don't preserve video memory (saves power on suspend)
+PreserveVideoMemoryAllocations = false
+
+# Fine-grained power management for aggressive power saving
+DynamicPowerManagement = 0x02
+
+TemporaryFilePath = "/tmp"
+
+# Initialize memory (slightly more power efficient)
+InitializeSystemMemoryAllocations = true
+
+[build]
+# Size-optimized build
+OptLevel = "Os"
+LTO = true
+MarchNative = true
