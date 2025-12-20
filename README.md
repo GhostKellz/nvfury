@@ -112,7 +112,19 @@ NVreg_EnablePCIeGen3=1             # Force PCIe Gen3+
 NVreg_EnableMSI=1                  # Message Signaled Interrupts
 NVreg_PreserveVideoMemoryAllocations=1  # Faster suspend/resume
 NVreg_TemporaryFilePath=/tmp       # Faster temp storage
+NVreg_EnableGpuFirmware=1          # Enable GSP firmware (590+)
 ```
+
+### GSP Firmware (Driver 590+)
+
+Driver 590+ supports GSP (GPU System Processor) firmware mode, which offloads
+GPU initialization to the on-chip RISC-V controller:
+
+- **Faster initialization** - GPU init/reset is quicker
+- **Better power management** - More efficient suspend/resume
+- **Native firmware** - Uses GPU's built-in firmware vs userspace blob
+
+nvfury automatically enables GSP on compatible drivers.
 
 ### Potential Patches (Community Sourced)
 - Scheduler hints for GPU-bound workloads
