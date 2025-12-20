@@ -74,9 +74,9 @@ pub fn fetchSource(allocator: std.mem.Allocator, options: FetchOptions) !FetchRe
 
 /// Get the latest release version from GitHub
 pub fn getLatestVersion(allocator: std.mem.Allocator) ![]u8 {
-    // For now, return the known latest version
+    // For now, return the known latest stable version with GSP support
     // TODO: Actually query GitHub API
-    return allocator.dupe(u8, "580.105.08");
+    return allocator.dupe(u8, "590.48.01");
 }
 
 /// Get list of available versions

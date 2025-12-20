@@ -8,7 +8,7 @@ pub const version = struct {
     pub const major = 0;
     pub const minor = 1;
     pub const patch = 0;
-    pub const string = "0.1.0-dev";
+    pub const string = "0.1.0";
 };
 
 pub const fetch = @import("fetch.zig");
@@ -35,14 +35,12 @@ pub const paths = struct {
     pub const modprobe = "/etc/modprobe.d/nvfury.conf";
 };
 
-/// Supported NVIDIA driver versions
+/// Supported NVIDIA driver versions (590+ with GSP support)
 pub const supported_versions = [_][]const u8{
-    "580.105.08", // Latest as of RTX 5090 launch
-    "575.51.02",
-    "570.86.16",
-    "565.77",
-    "560.35.03",
-    "555.58.02",
+    "590.48.01", // Current stable with GSP=1
+    "590.36.01",
+    "585.143.02",
+    "580.105.08",
 };
 
 /// GPU architecture support

@@ -66,6 +66,8 @@ pub const ModuleParams = struct {
     dynamic_power_management: u8 = 0x02,
     temporary_file_path: []const u8 = "/tmp",
     init_system_memory_allocs: bool = false,
+    enable_gpu_firmware: bool = true, // GSP firmware (590+)
+    enable_resizable_bar: bool = true, // ReBAR support
 
     /// Generate modprobe.d configuration content
     pub fn toModprobeConf(self: ModuleParams, allocator: std.mem.Allocator) ![]u8 {
@@ -103,6 +105,16 @@ pub const ModuleParams = struct {
             try buf.appendSlice(allocator, "NVreg_InitializeSystemMemoryAllocations=0 ");
         }
 
+        // GSP firmware (590+)
+        if (self.enable_gpu_firmware) {
+            try buf.appendSlice(allocator, "NVreg_EnableGpuFirmware=1 ");
+        }
+
+        // Resizable BAR
+        if (self.enable_resizable_bar) {
+            try buf.appendSlice(allocator, "NVreg_EnableResizableBar=1 ");
+        }
+
         try buf.append(allocator, '\n');
 
         return buf.toOwnedSlice(allocator);
@@ -119,6 +131,8 @@ pub const ModuleParams = struct {
                 .dynamic_power_management = 0x02, // Fine-grained power management
                 .temporary_file_path = "/tmp",
                 .init_system_memory_allocs = false,
+                .enable_gpu_firmware = true, // GSP enabled for 590+
+                .enable_resizable_bar = true, // ReBAR for RTX 40/50
             },
             .balanced => .{
                 .use_page_attribute_table = true,
@@ -128,6 +142,8 @@ pub const ModuleParams = struct {
                 .dynamic_power_management = 0x01, // Coarse-grained
                 .temporary_file_path = "/tmp",
                 .init_system_memory_allocs = false,
+                .enable_gpu_firmware = true,
+                .enable_resizable_bar = true,
             },
             .quiet => .{
                 .use_page_attribute_table = true,
@@ -137,6 +153,8 @@ pub const ModuleParams = struct {
                 .dynamic_power_management = 0x02,
                 .temporary_file_path = "/tmp",
                 .init_system_memory_allocs = true,
+                .enable_gpu_firmware = true,
+                .enable_resizable_bar = false, // Power saving
             },
             .benchmark => .{
                 .use_page_attribute_table = true,
@@ -146,6 +164,8 @@ pub const ModuleParams = struct {
                 .dynamic_power_management = 0x00, // Disabled for max perf
                 .temporary_file_path = "/dev/shm", // RAM disk
                 .init_system_memory_allocs = false,
+                .enable_gpu_firmware = true,
+                .enable_resizable_bar = true,
             },
         };
     }

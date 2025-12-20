@@ -13,13 +13,15 @@ pub const TuneResult = struct {
     message: []const u8,
 };
 
-/// Current module parameters (from loaded module)
+/// Current module parameters (from modprobe.d config)
 pub const CurrentParams = struct {
     use_page_attribute_table: ?bool,
     enable_pcie_gen3: ?bool,
     enable_msi: ?bool,
     preserve_video_memory: ?bool,
     dynamic_power_management: ?u8,
+    enable_gpu_firmware: ?bool,
+    enable_resizable_bar: ?bool,
 };
 
 /// Apply a tuning preset
@@ -61,61 +63,109 @@ pub fn applyPreset(allocator: std.mem.Allocator, preset: config.TunePreset) !Tun
     };
 }
 
-/// Read current module parameters from sysfs
+/// Read current module parameters from modprobe.d config
 pub fn getCurrentParams() CurrentParams {
-    return CurrentParams{
-        .use_page_attribute_table = readSysfsParam("UsePageAttributeTable"),
-        .enable_pcie_gen3 = readSysfsParam("EnablePCIeGen3"),
-        .enable_msi = readSysfsParam("EnableMSI"),
-        .preserve_video_memory = readSysfsParam("PreserveVideoMemoryAllocations"),
-        .dynamic_power_management = readSysfsByte("DynamicPowerManagement"),
+    var params = CurrentParams{
+        .use_page_attribute_table = null,
+        .enable_pcie_gen3 = null,
+        .enable_msi = null,
+        .preserve_video_memory = null,
+        .dynamic_power_management = null,
+        .enable_gpu_firmware = null,
+        .enable_resizable_bar = null,
     };
-}
 
-/// Read a boolean parameter from sysfs
-fn readSysfsParam(comptime param: []const u8) ?bool {
-    const path = "/sys/module/nvidia/parameters/" ++ param;
-    const file = std.fs.openFileAbsolute(path, .{}) catch return null;
+    // Try to read nvfury.conf
+    const conf_path = "/etc/modprobe.d/nvfury.conf";
+    const file = std.fs.openFileAbsolute(conf_path, .{}) catch return params;
     defer file.close();
 
-    var buf: [8]u8 = undefined;
-    const len = file.read(&buf) catch return null;
-    if (len == 0) return null;
+    var buf: [4096]u8 = undefined;
+    var total: usize = 0;
+    while (total < buf.len) {
+        const n = file.read(buf[total..]) catch return params;
+        if (n == 0) break;
+        total += n;
+    }
+    const content = buf[0..total];
 
-    const value = std.mem.trim(u8, buf[0..len], &[_]u8{ '\n', '\r', ' ' });
-    if (value.len == 0) return null;
+    // Parse parameters from config
+    params.use_page_attribute_table = parseModprobeBool(content, "NVreg_UsePageAttributeTable");
+    params.enable_pcie_gen3 = parseModprobeBool(content, "NVreg_EnablePCIeGen3");
+    params.enable_msi = parseModprobeBool(content, "NVreg_EnableMSI");
+    params.preserve_video_memory = parseModprobeBool(content, "NVreg_PreserveVideoMemoryAllocations");
+    params.dynamic_power_management = parseModprobeByte(content, "NVreg_DynamicPowerManagement");
+    params.enable_gpu_firmware = parseModprobeBool(content, "NVreg_EnableGpuFirmware");
+    params.enable_resizable_bar = parseModprobeBool(content, "NVreg_EnableResizableBar");
 
-    if (std.mem.eql(u8, value, "1") or std.mem.eql(u8, value, "Y")) {
-        return true;
-    } else if (std.mem.eql(u8, value, "0") or std.mem.eql(u8, value, "N")) {
-        return false;
+    return params;
+}
+
+/// Parse a boolean parameter from modprobe config content
+fn parseModprobeBool(content: []const u8, param: []const u8) ?bool {
+    // Look for "param=1" or "param=0"
+    var i: usize = 0;
+    while (i < content.len) {
+        if (std.mem.startsWith(u8, content[i..], param)) {
+            const after_param = i + param.len;
+            if (after_param < content.len and content[after_param] == '=') {
+                const value_start = after_param + 1;
+                if (value_start < content.len) {
+                    if (content[value_start] == '1') return true;
+                    if (content[value_start] == '0') return false;
+                }
+            }
+        }
+        i += 1;
     }
     return null;
 }
 
-/// Read a byte parameter from sysfs
-fn readSysfsByte(comptime param: []const u8) ?u8 {
-    const path = "/sys/module/nvidia/parameters/" ++ param;
-    const file = std.fs.openFileAbsolute(path, .{}) catch return null;
-    defer file.close();
-
-    var buf: [16]u8 = undefined;
-    const len = file.read(&buf) catch return null;
-    if (len == 0) return null;
-
-    const value = std.mem.trim(u8, buf[0..len], &[_]u8{ '\n', '\r', ' ' });
-
-    // Handle hex format (0x02)
-    if (value.len > 2 and value[0] == '0' and value[1] == 'x') {
-        return std.fmt.parseInt(u8, value[2..], 16) catch null;
+/// Parse a byte parameter from modprobe config content
+fn parseModprobeByte(content: []const u8, param: []const u8) ?u8 {
+    var i: usize = 0;
+    while (i < content.len) {
+        if (std.mem.startsWith(u8, content[i..], param)) {
+            const after_param = i + param.len;
+            if (after_param < content.len and content[after_param] == '=') {
+                const value_start = after_param + 1;
+                // Check for hex format 0x...
+                if (value_start + 2 < content.len and content[value_start] == '0' and content[value_start + 1] == 'x') {
+                    // Parse hex
+                    var end = value_start + 2;
+                    while (end < content.len and std.ascii.isHex(content[end])) {
+                        end += 1;
+                    }
+                    return std.fmt.parseInt(u8, content[value_start + 2 .. end], 16) catch null;
+                } else {
+                    // Parse decimal
+                    var end = value_start;
+                    while (end < content.len and std.ascii.isDigit(content[end])) {
+                        end += 1;
+                    }
+                    return std.fmt.parseInt(u8, content[value_start..end], 10) catch null;
+                }
+            }
+        }
+        i += 1;
     }
-
-    return std.fmt.parseInt(u8, value, 10) catch null;
+    return null;
 }
+
 
 /// Get the currently active preset based on parameters
 pub fn detectCurrentPreset() ?config.TunePreset {
     const current = getCurrentParams();
+
+    // If no config file exists (all null), return null
+    const has_any_param = current.use_page_attribute_table != null or
+        current.enable_pcie_gen3 != null or
+        current.enable_msi != null or
+        current.dynamic_power_management != null or
+        current.enable_gpu_firmware != null or
+        current.enable_resizable_bar != null;
+
+    if (!has_any_param) return null;
 
     // Check against known presets
     inline for (@typeInfo(config.TunePreset).@"enum".fields) |field| {
@@ -136,6 +186,12 @@ pub fn detectCurrentPreset() ?config.TunePreset {
         if (current.dynamic_power_management) |dpm| {
             if (dpm != expected.dynamic_power_management) matches = false;
         }
+        if (current.enable_gpu_firmware) |gsp| {
+            if (gsp != expected.enable_gpu_firmware) matches = false;
+        }
+        if (current.enable_resizable_bar) |rebar| {
+            if (rebar != expected.enable_resizable_bar) matches = false;
+        }
 
         if (matches) return preset;
     }
@@ -155,39 +211,52 @@ pub fn printStatus(writer: anytype) !void {
         try writer.print("Active Preset: {s}\n", .{@tagName(p)});
         try writer.print("Description:   {s}\n", .{p.description()});
     } else {
-        try writer.print("Active Preset: custom / unknown\n", .{});
+        try writer.print("Active Preset: (no nvfury config found)\n", .{});
+        try writer.print("Run 'sudo nvfury tune gaming' to apply settings.\n", .{});
     }
 
-    try writer.print("\nModule Parameters:\n", .{});
+    try writer.print("\nModule Parameters (from /etc/modprobe.d/nvfury.conf):\n", .{});
 
     if (current.use_page_attribute_table) |pat| {
         try writer.print("  UsePageAttributeTable: {}\n", .{pat});
     } else {
-        try writer.print("  UsePageAttributeTable: (not available)\n", .{});
+        try writer.print("  UsePageAttributeTable: (not set)\n", .{});
     }
 
     if (current.enable_pcie_gen3) |gen3| {
-        try writer.print("  EnablePCIeGen3: {}\n", .{gen3});
+        try writer.print("  EnablePCIeGen3:        {}\n", .{gen3});
     } else {
-        try writer.print("  EnablePCIeGen3: (not available)\n", .{});
+        try writer.print("  EnablePCIeGen3:        (not set)\n", .{});
     }
 
     if (current.enable_msi) |msi| {
-        try writer.print("  EnableMSI: {}\n", .{msi});
+        try writer.print("  EnableMSI:             {}\n", .{msi});
     } else {
-        try writer.print("  EnableMSI: (not available)\n", .{});
+        try writer.print("  EnableMSI:             (not set)\n", .{});
     }
 
     if (current.preserve_video_memory) |pvm| {
-        try writer.print("  PreserveVideoMemory: {}\n", .{pvm});
+        try writer.print("  PreserveVideoMemory:   {}\n", .{pvm});
     } else {
-        try writer.print("  PreserveVideoMemory: (not available)\n", .{});
+        try writer.print("  PreserveVideoMemory:   (not set)\n", .{});
     }
 
     if (current.dynamic_power_management) |dpm| {
-        try writer.print("  DynamicPowerManagement: 0x{x:0>2}\n", .{dpm});
+        try writer.print("  DynamicPowerMgmt:      0x{x:0>2}\n", .{dpm});
     } else {
-        try writer.print("  DynamicPowerManagement: (not available)\n", .{});
+        try writer.print("  DynamicPowerMgmt:      (not set)\n", .{});
+    }
+
+    if (current.enable_gpu_firmware) |gsp| {
+        try writer.print("  EnableGpuFirmware:     {} (GSP)\n", .{gsp});
+    } else {
+        try writer.print("  EnableGpuFirmware:     (not set)\n", .{});
+    }
+
+    if (current.enable_resizable_bar) |rebar| {
+        try writer.print("  EnableResizableBar:    {} (ReBAR)\n", .{rebar});
+    } else {
+        try writer.print("  EnableResizableBar:    (not set)\n", .{});
     }
 }
 
