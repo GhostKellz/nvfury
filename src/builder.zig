@@ -27,14 +27,13 @@ pub const nvidia_modules = [_][]const u8{
     "nvidia-drm.ko",
 };
 
-/// Default compiler flags for gaming optimization
+/// Default compiler flags for gaming optimization (kernel-module safe)
+/// Note: LTO and some flags don't work well with kernel module builds
 pub const gaming_cflags = [_][]const u8{
     "-march=native",
     "-O3",
-    "-flto",
-    "-fno-semantic-interposition",
-    "-fvisibility=hidden",
-    "-fno-plt",
+    // Note: -flto causes issues with kernel module linking
+    // Note: -fno-semantic-interposition can break kernel module loading
 };
 
 /// Build options
@@ -45,8 +44,8 @@ pub const BuildOptions = struct {
     output_dir: []const u8,
     /// Kernel version to build for (null = current kernel)
     kernel_version: ?[]const u8 = null,
-    /// Use zig cc as compiler
-    use_zig_cc: bool = true,
+    /// Use zig cc as compiler (disabled by default - NVIDIA Makefile compatibility issues)
+    use_zig_cc: bool = false,
     /// Enable LTO
     lto: bool = true,
     /// Extra CFLAGS
@@ -80,6 +79,9 @@ pub fn build(allocator: std.mem.Allocator, options: BuildOptions) !BuildResult {
         };
     };
 
+    // Detect kernel compiler (clang vs gcc) by reading /proc/version
+    const kernel_cc = detectKernelCompiler();
+
     // Build CFLAGS
     var cflags: std.ArrayListUnmanaged(u8) = .{};
     defer cflags.deinit(allocator);
@@ -92,8 +94,8 @@ pub fn build(allocator: std.mem.Allocator, options: BuildOptions) !BuildResult {
         try cflags.appendSlice(allocator, options.extra_cflags);
     }
 
-    // Determine compiler
-    const cc = if (options.use_zig_cc) "zig cc" else "gcc";
+    // Determine compiler - use what the kernel was built with
+    const cc = if (options.use_zig_cc) "zig cc" else kernel_cc;
 
     // Determine job count
     const jobs = if (options.jobs == 0)
@@ -123,9 +125,22 @@ pub fn build(allocator: std.mem.Allocator, options: BuildOptions) !BuildResult {
 
     var env_map = try std.process.getEnvMap(allocator);
     defer env_map.deinit();
-    try env_map.put("CFLAGS", cflags.items);
+    // Use EXTRA_CFLAGS to append our flags without overwriting NVIDIA's required flags
+    try env_map.put("EXTRA_CFLAGS", cflags.items);
     try env_map.put("CC", cc);
     try env_map.put("KDIR", kernel_dir);
+
+    // For clang-built kernels, set LLVM=1 to tell Kbuild to use LLVM-compatible flags
+    // Also set LD, AR, NM, etc. to LLVM tools for consistent toolchain
+    if (std.mem.eql(u8, kernel_cc, "clang")) {
+        try env_map.put("LLVM", "1");
+        try env_map.put("LD", "ld.lld");
+        try env_map.put("AR", "llvm-ar");
+        try env_map.put("NM", "llvm-nm");
+        try env_map.put("OBJCOPY", "llvm-objcopy");
+        try env_map.put("OBJDUMP", "llvm-objdump");
+        try env_map.put("STRIP", "llvm-strip");
+    }
 
     var child = std.process.Child.init(&.{
         "make",
@@ -142,7 +157,7 @@ pub fn build(allocator: std.mem.Allocator, options: BuildOptions) !BuildResult {
     const term = try child.spawnAndWait();
     const duration_ns: u64 = if (timer) |*t| t.read() else 0;
 
-    if (term.Exited != 0) {
+    if (term != .Exited or term.Exited != 0) {
         return BuildResult{
             .output_path = "",
             .modules = &.{},
@@ -226,7 +241,30 @@ pub fn getZigVersion(allocator: std.mem.Allocator) ![]u8 {
     return allocator.dupe(u8, buf[0..end]);
 }
 
+/// Detect what compiler was used to build the running kernel
+/// Reads /proc/version to check for "clang" or "gcc"
+pub fn detectKernelCompiler() []const u8 {
+    const file = std.fs.openFileAbsolute("/proc/version", .{}) catch return "gcc";
+    defer file.close();
+
+    var buf: [512]u8 = undefined;
+    const len = file.read(&buf) catch return "gcc";
+    const version_str = buf[0..len];
+
+    // Check if kernel was built with clang
+    if (std.mem.indexOf(u8, version_str, "clang") != null) {
+        return "clang";
+    }
+
+    return "gcc";
+}
+
 test "builder" {
     try std.testing.expect(nvidia_modules.len == 4);
     try std.testing.expect(gaming_cflags.len > 0);
+}
+
+test "detect kernel compiler" {
+    const cc = detectKernelCompiler();
+    try std.testing.expect(std.mem.eql(u8, cc, "clang") or std.mem.eql(u8, cc, "gcc"));
 }

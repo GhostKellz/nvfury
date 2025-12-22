@@ -10,10 +10,13 @@ pub fn main() !void {
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
 
+    // Set up stdout/stderr writers using Zig 0.16 fs.File.Writer API
     var stdout_buf: [4096]u8 = undefined;
     var stderr_buf: [4096]u8 = undefined;
-    var stdout = std.fs.File.stdout().writer(&stdout_buf);
-    var stderr = std.fs.File.stderr().writer(&stderr_buf);
+    var stdout_writer = std.fs.File.Writer.init(std.fs.File.stdout(), &stdout_buf);
+    var stderr_writer = std.fs.File.Writer.init(std.fs.File.stderr(), &stderr_buf);
+    const stdout = &stdout_writer.interface;
+    const stderr = &stderr_writer.interface;
 
     // Parse command line args
     var args = try std.process.argsWithAllocator(allocator);
@@ -23,68 +26,75 @@ pub fn main() !void {
     _ = args.next();
 
     const command = args.next() orelse {
-        try printUsage(&stdout.interface);
-        try stdout.interface.flush();
+        try printUsage(stdout);
+        try stdout.flush();
         return;
     };
 
     if (std.mem.eql(u8, command, "version") or std.mem.eql(u8, command, "--version") or std.mem.eql(u8, command, "-v")) {
-        try printVersion(&stdout.interface);
-        try stdout.interface.flush();
+        try printVersion(stdout);
+        try stdout.flush();
         return;
     }
 
     if (std.mem.eql(u8, command, "help") or std.mem.eql(u8, command, "--help") or std.mem.eql(u8, command, "-h")) {
-        try printUsage(&stdout.interface);
-        try stdout.interface.flush();
+        try printUsage(stdout);
+        try stdout.flush();
         return;
     }
 
     if (std.mem.eql(u8, command, "status")) {
-        try printStatus(allocator, &stdout.interface, &stderr.interface);
-        try stdout.interface.flush();
-        try stderr.interface.flush();
+        try printStatus(allocator, stdout, stderr);
+        try stdout.flush();
+        try stderr.flush();
         return;
     }
 
     if (std.mem.eql(u8, command, "build")) {
-        try cmdBuild(allocator, &args, &stdout.interface, &stderr.interface);
-        try stdout.interface.flush();
-        try stderr.interface.flush();
+        try cmdBuild(allocator, &args, stdout, stderr);
+        try stdout.flush();
+        try stderr.flush();
         return;
     }
 
     if (std.mem.eql(u8, command, "install")) {
-        try cmdInstall(allocator, &args, &stdout.interface, &stderr.interface);
-        try stdout.interface.flush();
-        try stderr.interface.flush();
+        try cmdInstall(allocator, &args, stdout, stderr);
+        try stdout.flush();
+        try stderr.flush();
         return;
     }
 
     if (std.mem.eql(u8, command, "tune")) {
-        try cmdTune(allocator, &args, &stdout.interface, &stderr.interface);
-        try stdout.interface.flush();
-        try stderr.interface.flush();
+        try cmdTune(allocator, &args, stdout, stderr);
+        try stdout.flush();
+        try stderr.flush();
         return;
     }
 
     if (std.mem.eql(u8, command, "patch")) {
-        try cmdPatch(allocator, &args, &stdout.interface, &stderr.interface);
-        try stdout.interface.flush();
-        try stderr.interface.flush();
+        try cmdPatch(allocator, &args, stdout, stderr);
+        try stdout.flush();
+        try stderr.flush();
         return;
     }
 
     if (std.mem.eql(u8, command, "rollback")) {
-        try cmdRollback(allocator, &stdout.interface, &stderr.interface);
-        try stdout.interface.flush();
-        try stderr.interface.flush();
+        try cmdRollback(allocator, stdout, stderr);
+        try stdout.flush();
+        try stderr.flush();
         return;
     }
 
-    try stderr.interface.print("Unknown command: {s}\n", .{command});
-    try stderr.interface.print("Run 'nvfury help' for usage information.\n", .{});
-    try stderr.interface.flush();
+    if (std.mem.eql(u8, command, "versions")) {
+        try cmdVersions(allocator, stdout, stderr);
+        try stdout.flush();
+        try stderr.flush();
+        return;
+    }
+
+    try stderr.print("Unknown command: {s}\n", .{command});
+    try stderr.print("Run 'nvfury help' for usage information.\n", .{});
+    try stderr.flush();
 }
 
 fn printVersion(writer: *std.Io.Writer) !void {
@@ -106,6 +116,7 @@ fn printUsage(writer: *std.Io.Writer) !void {
         \\  tune <preset>       Apply module parameter preset
         \\  patch <subcommand>  Manage patches
         \\  status              Show current driver status
+        \\  versions            List available driver versions from GitHub
         \\  rollback            Restore previous driver
         \\  version             Show version information
         \\  help                Show this help message
@@ -114,6 +125,7 @@ fn printUsage(writer: *std.Io.Writer) !void {
         \\  --version <ver>     Build specific driver version
         \\  --source <path>     Build from local source directory
         \\  --latest            Fetch and build latest release
+        \\  --patches <list>    Apply patches (comma-separated or 'default')
         \\  --dry-run           Show what would be done
         \\
         \\Install Options:
@@ -179,6 +191,10 @@ fn printStatus(allocator: std.mem.Allocator, writer: *std.Io.Writer, err_writer:
         try writer.print("DKMS:             Not installed\n", .{});
     }
 
+    // Show kernel compiler
+    const kernel_cc = nvfury.builder.detectKernelCompiler();
+    try writer.print("Kernel Compiler:  {s}\n", .{kernel_cc});
+
     // Show tuning status
     try writer.print("\n", .{});
     try nvfury.tune.printStatus(writer);
@@ -188,6 +204,7 @@ fn cmdBuild(allocator: std.mem.Allocator, args: *std.process.ArgIterator, writer
     var version: ?[]const u8 = null;
     var source_dir: ?[]const u8 = null;
     var dry_run = false;
+    var patches_arg: ?[]const u8 = null;
 
     // Parse options
     while (args.next()) |arg| {
@@ -199,6 +216,8 @@ fn cmdBuild(allocator: std.mem.Allocator, args: *std.process.ArgIterator, writer
             dry_run = true;
         } else if (std.mem.eql(u8, arg, "--latest")) {
             version = null; // Fetch latest
+        } else if (std.mem.eql(u8, arg, "--patches")) {
+            patches_arg = args.next();
         }
     }
 
@@ -206,28 +225,94 @@ fn cmdBuild(allocator: std.mem.Allocator, args: *std.process.ArgIterator, writer
     try writer.print("---------------------------------------------------\n", .{});
 
     // Fetch source if not provided
+    var fetch_result: ?nvfury.fetch.FetchResult = null;
+    defer if (fetch_result) |fr| {
+        allocator.free(fr.version);
+        allocator.free(fr.source_path);
+    };
+
     const actual_source = if (source_dir) |s| s else blk: {
         try writer.print("Fetching NVIDIA open kernel modules...\n", .{});
-        const fetch_result = nvfury.fetch.fetchSource(allocator, .{
+        fetch_result = nvfury.fetch.fetchSource(allocator, .{
             .version = version,
         }) catch |e| {
             try err_writer.print("Fetch failed: {}\n", .{e});
             return;
         };
 
-        try writer.print("Version: {s}\n", .{fetch_result.version});
-        if (fetch_result.from_cache) {
+        const fr = fetch_result.?;
+        try writer.print("Version: {s}\n", .{fr.version});
+        if (fr.from_cache) {
             try writer.print("Source:  (cached)\n", .{});
         } else {
-            try writer.print("Source:  {s}\n", .{fetch_result.source_path});
+            try writer.print("Source:  {s}\n", .{fr.source_path});
         }
 
-        break :blk fetch_result.source_path;
+        break :blk fr.source_path;
     };
 
     if (dry_run) {
         try writer.print("\n[DRY RUN] Would build from: {s}\n", .{actual_source});
+        if (patches_arg) |pa| {
+            try writer.print("[DRY RUN] Would apply patches: {s}\n", .{pa});
+        }
         return;
+    }
+
+    // Apply patches if specified
+    if (patches_arg) |pa| {
+        try writer.print("\nApplying patches...\n", .{});
+
+        // Get patches directory (relative to nvfury install or current dir)
+        const patches_dir = "/data/projects/nvfury/patches"; // TODO: make configurable
+
+        if (std.mem.eql(u8, pa, "default")) {
+            // Apply all default-enabled patches
+            for (nvfury.patch.builtin_patches) |patch| {
+                if (patch.default_enabled) {
+                    const patch_path = nvfury.patch.getPatchPath(allocator, patches_dir, patch.name) catch continue;
+                    defer allocator.free(patch_path);
+
+                    // Check if patch applies
+                    if (nvfury.patch.checkPatch(allocator, actual_source, patch_path) catch false) {
+                        const result = nvfury.patch.applyPatch(allocator, actual_source, patch_path) catch |e| {
+                            try err_writer.print("  Warning: Failed to apply {s}: {}\n", .{ patch.name, e });
+                            continue;
+                        };
+                        if (result.success) {
+                            try writer.print("  Applied: {s}\n", .{patch.name});
+                        }
+                    } else {
+                        try writer.print("  Skipped: {s} (doesn't apply cleanly)\n", .{patch.name});
+                    }
+                }
+            }
+        } else {
+            // Apply comma-separated list of patches
+            var iter = std.mem.splitScalar(u8, pa, ',');
+            while (iter.next()) |patch_name| {
+                const trimmed = std.mem.trim(u8, patch_name, " \t");
+                if (trimmed.len == 0) continue;
+
+                const patch_path = nvfury.patch.getPatchPath(allocator, patches_dir, trimmed) catch |e| {
+                    try err_writer.print("  Warning: Patch not found {s}: {}\n", .{ trimmed, e });
+                    continue;
+                };
+                defer allocator.free(patch_path);
+
+                if (nvfury.patch.checkPatch(allocator, actual_source, patch_path) catch false) {
+                    const result = nvfury.patch.applyPatch(allocator, actual_source, patch_path) catch |e| {
+                        try err_writer.print("  Warning: Failed to apply {s}: {}\n", .{ trimmed, e });
+                        continue;
+                    };
+                    if (result.success) {
+                        try writer.print("  Applied: {s}\n", .{trimmed});
+                    }
+                } else {
+                    try writer.print("  Skipped: {s} (doesn't apply cleanly)\n", .{trimmed});
+                }
+            }
+        }
     }
 
     // Build
@@ -252,10 +337,11 @@ fn cmdBuild(allocator: std.mem.Allocator, args: *std.process.ArgIterator, writer
     }
 }
 
-fn cmdInstall(_: std.mem.Allocator, args: *std.process.ArgIterator, writer: *std.Io.Writer, err_writer: *std.Io.Writer) !void {
-    _ = err_writer;
+fn cmdInstall(allocator: std.mem.Allocator, args: *std.process.ArgIterator, writer: *std.Io.Writer, err_writer: *std.Io.Writer) !void {
     var use_dkms = true;
     var create_backup = true;
+    var source_dir: ?[]const u8 = null;
+    var version: ?[]const u8 = null;
 
     // Parse options
     while (args.next()) |arg| {
@@ -265,30 +351,93 @@ fn cmdInstall(_: std.mem.Allocator, args: *std.process.ArgIterator, writer: *std
             use_dkms = true;
         } else if (std.mem.eql(u8, arg, "--no-backup")) {
             create_backup = false;
+        } else if (std.mem.eql(u8, arg, "--source")) {
+            source_dir = args.next();
+        } else if (std.mem.eql(u8, arg, "--version")) {
+            version = args.next();
         }
     }
 
     try writer.print("nvfury install\n", .{});
     try writer.print("---------------------------------------------------\n", .{});
 
+    // Get version and source from last build if not specified
+    const actual_version = version orelse nvfury.fetch.getInstalledDriverVersion() orelse {
+        try err_writer.print("Error: No version specified and couldn't detect installed driver.\n", .{});
+        try err_writer.print("Use --version <ver> or run 'nvfury build' first.\n", .{});
+        return;
+    };
+
+    try writer.print("Version: {s}\n", .{actual_version});
+    try writer.print("Backup:  {}\n", .{create_backup});
+
     if (use_dkms) {
         if (!nvfury.dkms.isDkmsAvailable()) {
-            try writer.print("Error: DKMS not available. Use --direct or install dkms.\n", .{});
+            try err_writer.print("Error: DKMS not available. Use --direct or install dkms.\n", .{});
             return;
         }
-        try writer.print("Mode: DKMS (automatic rebuild on kernel update)\n", .{});
-    } else {
-        try writer.print("Mode: Direct (manual rebuild needed on kernel update)\n", .{});
-    }
+        try writer.print("Mode:    DKMS (automatic rebuild on kernel update)\n", .{});
 
-    try writer.print("Backup: {}\n", .{create_backup});
-    try writer.print("\nNote: Full installation requires built modules.\n", .{});
-    try writer.print("Run 'nvfury build' first if you haven't already.\n", .{});
+        // Check if source directory is provided
+        const src = source_dir orelse {
+            try err_writer.print("Error: Source directory required for DKMS registration.\n", .{});
+            try err_writer.print("Use --source <path> to specify the built source directory.\n", .{});
+            return;
+        };
+
+        try writer.print("Source:  {s}\n", .{src});
+        try writer.print("\nRegistering with DKMS...\n", .{});
+
+        // Register with DKMS
+        const kernel_cc = nvfury.builder.detectKernelCompiler();
+        const reg_result = try nvfury.dkms.register(allocator, .{
+            .version = actual_version,
+            .source_dir = src,
+            .cc = if (std.mem.eql(u8, kernel_cc, "clang")) "clang" else "gcc",
+            .cflags = "-march=native -O3",
+        });
+
+        if (!reg_result.success) {
+            try err_writer.print("DKMS registration failed: {s}\n", .{reg_result.message});
+            return;
+        }
+        try writer.print("DKMS registration: OK\n", .{});
+
+        // Build via DKMS
+        try writer.print("Building via DKMS...\n", .{});
+        const build_result = try nvfury.dkms.buildDkms(allocator, actual_version, null);
+
+        if (!build_result.success) {
+            try err_writer.print("DKMS build failed: {s}\n", .{build_result.message});
+            return;
+        }
+        try writer.print("DKMS build: OK\n", .{});
+
+        // Install via DKMS
+        try writer.print("Installing via DKMS...\n", .{});
+        const install_result = try nvfury.dkms.installDkms(allocator, actual_version, null);
+
+        if (!install_result.success) {
+            try err_writer.print("DKMS install failed: {s}\n", .{install_result.message});
+            return;
+        }
+
+        try writer.print("\nDKMS installation complete!\n", .{});
+        try writer.print("Modules will auto-rebuild on kernel updates.\n", .{});
+        try writer.print("Reboot to load the new modules.\n", .{});
+    } else {
+        try writer.print("Mode:    Direct (manual rebuild needed on kernel update)\n", .{});
+        try writer.print("\nDirect installation copies modules to /lib/modules/$(uname -r)/\n", .{});
+        try writer.print("Note: You'll need to rebuild manually after kernel updates.\n", .{});
+
+        // For direct install, we'd copy .ko files to /lib/modules/.../
+        // This requires the built modules to exist
+        try err_writer.print("Direct installation not yet implemented.\n", .{});
+        try err_writer.print("Use --dkms for now (recommended anyway).\n", .{});
+    }
 }
 
 fn cmdTune(allocator: std.mem.Allocator, args: *std.process.ArgIterator, writer: *std.Io.Writer, err_writer: *std.Io.Writer) !void {
-    _ = allocator;
-
     const subcommand = args.next() orelse "status";
 
     if (std.mem.eql(u8, subcommand, "status")) {
@@ -313,7 +462,27 @@ fn cmdTune(allocator: std.mem.Allocator, args: *std.process.ArgIterator, writer:
 
     try writer.print("Applying preset: {s}\n", .{@tagName(preset)});
     try writer.print("Description: {s}\n", .{preset.description()});
-    try writer.print("\nNote: Run with sudo to apply changes.\n", .{});
+
+    // Actually apply the preset
+    const result = try nvfury.tune.applyPreset(allocator, preset);
+
+    if (result.success) {
+        try writer.print("\nConfiguration written to: {s}\n", .{result.config_path});
+        try writer.print("{s}\n", .{result.message});
+
+        // Show what was configured
+        const params = nvfury.config.ModuleParams.fromPreset(preset);
+        try writer.print("\nModule parameters set:\n", .{});
+        try writer.print("  UsePageAttributeTable: {}\n", .{params.use_page_attribute_table});
+        try writer.print("  EnablePCIeGen3:        {}\n", .{params.enable_pcie_gen3});
+        try writer.print("  EnableMSI:             {}\n", .{params.enable_msi});
+        try writer.print("  PreserveVideoMemory:   {}\n", .{params.preserve_video_memory});
+        try writer.print("  DynamicPowerMgmt:      0x{x:0>2}\n", .{params.dynamic_power_management});
+        try writer.print("  EnableGpuFirmware:     {} (GSP)\n", .{params.enable_gpu_firmware});
+        try writer.print("  EnableResizableBar:    {} (ReBAR)\n", .{params.enable_resizable_bar});
+    } else {
+        try err_writer.print("Error: {s}\n", .{result.message});
+    }
 }
 
 fn cmdPatch(allocator: std.mem.Allocator, args: *std.process.ArgIterator, writer: *std.Io.Writer, err_writer: *std.Io.Writer) !void {
@@ -356,6 +525,36 @@ fn cmdRollback(allocator: std.mem.Allocator, writer: *std.Io.Writer, err_writer:
     try writer.print("Looking for available backups...\n", .{});
     try writer.print("\nNote: Rollback functionality requires a previous backup.\n", .{});
     try writer.print("Backups are created during 'nvfury install'.\n", .{});
+}
+
+fn cmdVersions(allocator: std.mem.Allocator, writer: *std.Io.Writer, err_writer: *std.Io.Writer) !void {
+    try writer.print("nvfury versions\n", .{});
+    try writer.print("---------------------------------------------------\n", .{});
+    try writer.print("Fetching available versions from GitHub...\n\n", .{});
+
+    var versions = nvfury.fetch.getAvailableVersions(allocator) catch |e| {
+        try err_writer.print("Error fetching versions: {}\n", .{e});
+        return;
+    };
+    defer versions.deinit();
+
+    // Get installed version for comparison
+    const installed = nvfury.fetch.getInstalledDriverVersion();
+
+    try writer.print("Available NVIDIA Open Kernel Module Versions:\n", .{});
+    for (versions.items.items) |version| {
+        if (installed) |inst| {
+            if (std.mem.eql(u8, version, inst)) {
+                try writer.print("  {s}  (installed)\n", .{version});
+            } else {
+                try writer.print("  {s}\n", .{version});
+            }
+        } else {
+            try writer.print("  {s}\n", .{version});
+        }
+    }
+
+    try writer.print("\nUse 'nvfury build --version <ver>' to build a specific version.\n", .{});
 }
 
 test "main module compiles" {

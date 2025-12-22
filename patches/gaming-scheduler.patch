@@ -1,0 +1,76 @@
+--- a/kernel-open/nvidia/nv-kthread-q.c
++++ b/kernel-open/nvidia/nv-kthread-q.c
+@@ -40,6 +40,8 @@
+ #include <linux/sched.h>
+ #include <linux/kthread.h>
+ #include <linux/delay.h>
++#include <linux/sched/prio.h>
++#include <uapi/linux/sched/types.h>
+
+ #include "nv-kthread-q.h"
+ #include "os-interface.h"
+@@ -127,6 +129,8 @@ static int _kthread_q_function(void *args)
+ int NV_API_CALL nv_kthread_q_init(nv_kthread_q_t *q, const char *name)
+ {
+     int err = 0;
++    struct sched_param param;
++    int ret;
+
+     memset(q, 0, sizeof(*q));
+
+@@ -152,6 +156,25 @@ int NV_API_CALL nv_kthread_q_init(nv_kthread_q_t *q, const char *name)
+         goto error;
+     }
+
++    /*
++     * nvfury gaming-scheduler patch:
++     * Elevate GPU worker thread priority to reduce scheduling latency.
++     * Uses SCHED_FIFO with priority 1 (lowest RT priority) for better
++     * responsiveness without starving other system tasks.
++     *
++     * This optimization reduces frame time variance by ensuring GPU
++     * work completion threads get CPU time promptly.
++     */
++    param.sched_priority = 1;
++    ret = sched_setscheduler(q->q_kthread, SCHED_FIFO, &param);
++    if (ret != 0) {
++        /*
++         * Non-fatal: fall back to default scheduler if SCHED_FIFO
++         * is not available (e.g., RT throttling is enabled).
++         */
++        pr_info("nvfury: RT scheduling unavailable, using default\n");
++    }
++
+     q->q_is_running = NV_TRUE;
+
+     return 0;
+--- a/kernel-open/nvidia/os-interface.c
++++ b/kernel-open/nvidia/os-interface.c
+@@ -45,6 +45,7 @@
+ #include <linux/sched.h>
+ #include <linux/mm.h>
+ #include <linux/delay.h>
++#include <linux/sched/rt.h>
+
+ #include "os-interface.h"
+ #include "nv-linux.h"
+@@ -512,6 +513,19 @@ NV_STATUS NV_API_CALL os_schedule(void)
+     return NV_OK;
+ }
+
++/*
++ * nvfury gaming-scheduler patch:
++ * Yield to other RT tasks when spinning to avoid priority inversion
++ * with compositors and other latency-sensitive processes.
++ */
++NV_STATUS NV_API_CALL os_schedule_yield_rt(void)
++{
++    if (rt_task(current))
++        yield();
++    else
++        cond_resched();
++    return NV_OK;
++}
+
+ static void os_execute_work_item(struct work_struct *work)
+ {

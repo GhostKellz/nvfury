@@ -31,6 +31,17 @@ pub const PatchInfo = struct {
 
 /// Built-in patches
 pub const builtin_patches = [_]PatchInfo{
+    // === Compatibility ===
+    .{
+        .name = "clang-compat",
+        .description = "Compatibility fixes for clang-built kernels (CachyOS, etc.)",
+        .category = .compatibility,
+        .default_enabled = true,
+        .min_version = null,
+        .max_version = null,
+    },
+
+    // === Performance ===
     .{
         .name = "gaming-scheduler",
         .description = "Optimize GPU scheduler for gaming workloads",
@@ -40,6 +51,16 @@ pub const builtin_patches = [_]PatchInfo{
         .max_version = null,
     },
     .{
+        .name = "gpu-scheduler-gaming",
+        .description = "Real-time scheduling for GPU threads (SCHED_FIFO)",
+        .category = .performance,
+        .default_enabled = false, // Aggressive - user opt-in
+        .min_version = null,
+        .max_version = null,
+    },
+
+    // === Memory ===
+    .{
         .name = "memory-optimize",
         .description = "Optimize memory allocation paths",
         .category = .memory,
@@ -47,6 +68,16 @@ pub const builtin_patches = [_]PatchInfo{
         .min_version = null,
         .max_version = null,
     },
+    .{
+        .name = "memory-huge-pages",
+        .description = "Prefer huge pages (2MB) for GPU buffers - reduces TLB misses",
+        .category = .memory,
+        .default_enabled = false, // May increase memory usage
+        .min_version = null,
+        .max_version = null,
+    },
+
+    // === Latency ===
     .{
         .name = "interrupt-latency",
         .description = "Reduce interrupt handling latency",
@@ -56,11 +87,59 @@ pub const builtin_patches = [_]PatchInfo{
         .max_version = null,
     },
     .{
+        .name = "low-latency-irq",
+        .description = "MSI-X IRQ optimization - disables IRQ balancing",
+        .category = .latency,
+        .default_enabled = false, // May affect multi-GPU systems
+        .min_version = null,
+        .max_version = null,
+    },
+    .{
+        .name = "pcie-latency",
+        .description = "Disable PCIe ASPM for consistent latency (~2-5W more power)",
+        .category = .latency,
+        .default_enabled = false, // Power trade-off
+        .min_version = null,
+        .max_version = null,
+    },
+
+    // === Power ===
+    .{
         .name = "blackwell-power-curve",
-        .description = "Optimized power curve for Blackwell GPUs",
+        .description = "Optimized power curve for Blackwell GPUs (RTX 50 series)",
         .category = .power,
         .default_enabled = false,
         .min_version = "565.57.01",
+        .max_version = null,
+    },
+
+    // === GPU-Specific ===
+    .{
+        .name = "blackwell-boost-gaming",
+        .description = "Aggressive boost config for RTX 5090/5080 (extended thermal, reduced decay)",
+        .category = .performance,
+        .default_enabled = false, // Requires good cooling (Astral, Strix, etc.)
+        .min_version = "565.57.01",
+        .max_version = null,
+    },
+
+    // === CPU-Specific ===
+    .{
+        .name = "amd-x3d-optimized",
+        .description = "DMA optimizations for AMD X3D (7950X3D, 9950X3D) large L3 cache",
+        .category = .performance,
+        .default_enabled = false, // AMD-specific
+        .min_version = null,
+        .max_version = null,
+    },
+
+    // === Display ===
+    .{
+        .name = "high-refresh-4k",
+        .description = "Optimizations for 4K 120Hz+ displays (buffer allocation, modeset)",
+        .category = .performance,
+        .default_enabled = false,
+        .min_version = null,
         .max_version = null,
     },
 };
@@ -112,7 +191,7 @@ pub fn checkPatch(allocator: std.mem.Allocator, source_dir: []const u8, patch_pa
 
     const term = try child.spawnAndWait();
 
-    return term.Exited == 0;
+    return term == .Exited and term.Exited == 0;
 }
 
 /// Revert a patch from the source tree

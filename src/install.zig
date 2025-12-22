@@ -194,7 +194,7 @@ fn verifyModulesLoad(allocator: std.mem.Allocator) !bool {
         child.stdout_behavior = .Pipe;
 
         const term = try child.spawnAndWait();
-        if (term.Exited != 0) {
+        if (term != .Exited or term.Exited != 0) {
             return false;
         }
     }

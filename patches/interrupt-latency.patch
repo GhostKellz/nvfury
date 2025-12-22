@@ -1,0 +1,111 @@
+--- a/kernel-open/nvidia/nv-irq.c
++++ b/kernel-open/nvidia/nv-irq.c
+@@ -35,6 +35,8 @@
+ #include <linux/interrupt.h>
+ #include <linux/pci.h>
+ #include <linux/msi.h>
++#include <linux/irq.h>
++#include <linux/cpumask.h>
+
+ #include "os-interface.h"
+ #include "nv-linux.h"
+@@ -48,6 +50,9 @@
+
+ #define NV_MAX_MSIX_VECTORS 32
+
++/* nvfury: Track preferred CPU for IRQ affinity */
++static int nv_irq_cpu = -1;
++
+ static irqreturn_t nv_isr(int irq, void *dev_id)
+ {
+     nv_linux_state_t *nvl = (nv_linux_state_t *)dev_id;
+@@ -112,6 +117,52 @@ static irqreturn_t nv_isr(int irq, void *dev_id)
+     return IRQ_HANDLED;
+ }
+
++/*
++ * nvfury interrupt-latency patch:
++ * Set IRQ affinity to a specific CPU to reduce interrupt migration
++ * overhead and improve cache locality for interrupt handling.
++ *
++ * By default, selects the last CPU (typically a performance core on
++ * hybrid architectures) unless overridden via module parameter.
++ */
++static void nv_set_irq_affinity(int irq, int cpu)
++{
++    struct irq_desc *desc;
++    struct cpumask mask;
++
++    if (cpu < 0 || cpu >= nr_cpu_ids)
++        cpu = nr_cpu_ids - 1;  /* Last CPU (often P-core) */
++
++    if (!cpu_online(cpu))
++        return;
++
++    cpumask_clear(&mask);
++    cpumask_set_cpu(cpu, &mask);
++
++    desc = irq_to_desc(irq);
++    if (desc) {
++        /*
++         * Use irq_set_affinity_hint() which is a hint to the kernel
++         * but can be overridden by user-space irqbalance if needed.
++         */
++        irq_set_affinity_hint(irq, &mask);
++
++        /*
++         * For more aggressive latency reduction, directly set affinity.
++         * This pins the interrupt and prevents irqbalance from moving it.
++         */
++#ifdef CONFIG_SMP
++        if (irq_can_set_affinity(desc))
++            irq_set_affinity(irq, &mask);
++#endif
++    }
++}
++
++static void nv_clear_irq_affinity(int irq)
++{
++    irq_set_affinity_hint(irq, NULL);
++}
++
++
+ NV_STATUS NV_API_CALL nv_init_irq(
+     nv_state_t *nv)
+ {
+@@ -173,6 +224,13 @@ NV_STATUS NV_API_CALL nv_init_irq(
+         goto failed;
+     }
+
++    /*
++     * nvfury interrupt-latency patch:
++     * Pin GPU interrupt to preferred CPU for consistent low latency.
++     */
++    nv_set_irq_affinity(nvl->msix_vectors[0].vector,
++                        nv_irq_cpu >= 0 ? nv_irq_cpu : (nr_cpu_ids - 1));
++
+     return NV_OK;
+
+ failed:
+@@ -216,6 +274,10 @@ void NV_API_CALL nv_shutdown_irq(
+         return;
+     }
+
++    /* nvfury: Clear affinity hint before freeing IRQ */
++    nv_clear_irq_affinity(nvl->msix_vectors[0].vector);
++
++
+     if (nvl->flags & NV_FLAG_MSIX_ACTIVE)
+     {
+         for (i = 0; i < nvl->msix_count; i++)
+@@ -234,3 +296,10 @@ void NV_API_CALL nv_shutdown_irq(
+
+     nvl->flags &= ~NV_FLAG_INTERRUPTS_ACTIVE;
+ }
++
++/*
++ * nvfury interrupt-latency patch:
++ * Module parameter to override default IRQ CPU selection.
++ * Use -1 for auto-selection (default), or 0-N for specific CPU.
++ */
++module_param(nv_irq_cpu, int, 0644);

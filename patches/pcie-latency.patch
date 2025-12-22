@@ -1,0 +1,72 @@
+--- a/kernel-open/nvidia/nv-pci.c
++++ b/kernel-open/nvidia/nv-pci.c
+@@ -30,6 +30,18 @@
+ #include "nv-pci.h"
+ #include "nv-msi.h"
+
++/*
++ * nvfury pcie-latency patch:
++ * Optimize PCIe configuration for minimum latency gaming.
++ *
++ * - Disable ASPM (Active State Power Management) to prevent link state transitions
++ * - Configure max payload size for throughput
++ * - Set max read request size for GPU memory access patterns
++ * - Enable relaxed ordering where safe for better PCIe utilization
++ *
++ * Trade-off: ~2-5W higher idle power for consistent latency
++ */
++
+ static void
+ nv_pci_set_max_payload_size(
+     struct pci_dev *pci_dev
+@@ -82,6 +94,42 @@ nv_pci_set_max_read_request_size(
+     pcie_set_readrq(pci_dev, readrq);
+ }
+
++/*
++ * nvfury: Disable ASPM for gaming - prevents latency spikes from link state transitions
++ */
++static void
++nv_pci_disable_aspm_for_gaming(
++    struct pci_dev *pci_dev
++)
++{
++    int pos;
++    u16 lnkctl;
++
++    pos = pci_find_capability(pci_dev, PCI_CAP_ID_EXP);
++    if (!pos)
++        return;
++
++    pci_read_config_word(pci_dev, pos + PCI_EXP_LNKCTL, &lnkctl);
++
++    /* Disable L0s and L1 ASPM states */
++    if (lnkctl & (PCI_EXP_LNKCTL_ASPM_L0S | PCI_EXP_LNKCTL_ASPM_L1))
++    {
++        lnkctl &= ~(PCI_EXP_LNKCTL_ASPM_L0S | PCI_EXP_LNKCTL_ASPM_L1);
++        pci_write_config_word(pci_dev, pos + PCI_EXP_LNKCTL, lnkctl);
++        nv_printf(NV_DBG_INFO, "NVRM: nvfury: Disabled ASPM for low-latency gaming\n");
++    }
++
++    /*
++     * Also disable ASPM on the upstream bridge if we have control.
++     * This ensures the entire PCIe path stays in L0 active state.
++     */
++    if (pci_dev->bus && pci_dev->bus->self)
++    {
++        nv_pci_disable_aspm_for_gaming(pci_dev->bus->self);
++    }
++}
++
+ NV_STATUS NV_API_CALL nv_pci_init(
+     nv_state_t *nv
+ )
+@@ -124,6 +172,9 @@ NV_STATUS NV_API_CALL nv_pci_init(
+     nv_pci_set_max_payload_size(pci_dev);
+     nv_pci_set_max_read_request_size(pci_dev);
+
++    /* nvfury: Disable ASPM for consistent gaming latency */
++    nv_pci_disable_aspm_for_gaming(pci_dev);
++
+     return NV_OK;
+ }

@@ -1,0 +1,100 @@
+--- a/kernel-open/nvidia/os-mlock.c
++++ b/kernel-open/nvidia/os-mlock.c
+@@ -32,6 +32,7 @@
+ #include <linux/slab.h>
+ #include <linux/mm.h>
+ #include <linux/vmalloc.h>
++#include <linux/gfp.h>
+
+ #include "os-interface.h"
+ #include "nv-linux.h"
+@@ -95,7 +96,18 @@ NV_STATUS NV_API_CALL os_alloc_mem(
+     {
+         nv_printf(NV_DBG_MEMINFO, "NVRM: os_alloc_mem: size=%lu, flags=0x%x\n",
+                   (unsigned long)size, alloc_flags);
+-        p = kmalloc(size, GFP_KERNEL);
++        /*
++         * nvfury memory-optimize patch:
++         * Use GFP_NOWAIT for small allocations to avoid blocking on
++         * memory reclaim during frame rendering. Fall back to GFP_KERNEL
++         * if allocation fails.
++         *
++         * This reduces allocation latency spikes that can cause frame
++         * drops during memory pressure.
++         */
++        p = kmalloc(size, GFP_NOWAIT | __GFP_NOWARN);
++        if (p == NULL)
++            p = kmalloc(size, GFP_KERNEL);
+     }
+
+     if (p == NULL)
+@@ -156,7 +168,15 @@ NV_STATUS NV_API_CALL os_alloc_contig_pages(
+         return NV_ERR_INVALID_ARGUMENT;
+     }
+
+-    address = (NvUPtr)page_address(alloc_pages(gfp_mask, order));
++    /*
++     * nvfury memory-optimize patch:
++     * Add __GFP_COMP flag for compound page handling, which allows
++     * the memory to be more efficiently mapped into userspace and
++     * reduces TLB pressure through transparent huge page support.
++     */
++    gfp_mask |= __GFP_COMP;
++
++    address = (NvUPtr)page_address(alloc_pages(gfp_mask | __GFP_NOWARN, order));
+
+     if (address == (NvUPtr)NULL)
+     {
+--- a/kernel-open/nvidia/nv-dma.c
++++ b/kernel-open/nvidia/nv-dma.c
+@@ -39,6 +39,7 @@
+ #include <linux/scatterlist.h>
+ #include <linux/dma-mapping.h>
+ #include <linux/version.h>
++#include <linux/dma-buf.h>
+
+ #include "os-interface.h"
+ #include "nv-linux.h"
+@@ -218,6 +219,7 @@ NV_STATUS NV_API_CALL nv_dma_map_pages(
+     dma_addr_t *dma_addresses,
+     NvU32 add_flags)
+ {
++    dma_addr_t dma_addr;
+     NV_STATUS status = NV_OK;
+     NvU32 i;
+
+@@ -225,9 +227,24 @@ NV_STATUS NV_API_CALL nv_dma_map_pages(
+     {
+         for (i = 0; i < page_count; i++)
+         {
+-            dma_addresses[i] = dma_map_page(dev, pages[i], 0, PAGE_SIZE,
+-                                            DMA_BIDIRECTIONAL);
+-            if (dma_mapping_error(dev, dma_addresses[i]))
++            /*
++             * nvfury memory-optimize patch:
++             * Use DMA_ATTR_SKIP_CPU_SYNC when mapping pages for GPU use.
++             * The GPU maintains cache coherency through its own mechanisms,
++             * so we can skip the CPU cache sync operations.
++             *
++             * This reduces per-mapping overhead by eliminating unnecessary
++             * cache flushes on x86_64 (which is already cache-coherent) and
++             * ARM64 with cache-coherent interconnects.
++             */
++#ifdef DMA_ATTR_SKIP_CPU_SYNC
++            dma_addr = dma_map_page_attrs(dev, pages[i], 0, PAGE_SIZE,
++                                          DMA_BIDIRECTIONAL, DMA_ATTR_SKIP_CPU_SYNC);
++#else
++            dma_addr = dma_map_page(dev, pages[i], 0, PAGE_SIZE, DMA_BIDIRECTIONAL);
++#endif
++            if (dma_mapping_error(dev, dma_addr))
+             {
+                 while (i--)
+                 {
+@@ -236,6 +253,7 @@ NV_STATUS NV_API_CALL nv_dma_map_pages(
+                 status = NV_ERR_OPERATING_SYSTEM;
+                 break;
+             }
++            dma_addresses[i] = dma_addr;
+         }
+     }
+

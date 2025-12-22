@@ -1,0 +1,32 @@
+--- a/kernel-open/Makefile
++++ b/kernel-open/Makefile
+@@ -30,6 +30,15 @@ ifeq ($(NV_VERBOSE),1)
+  KBUILD_VERBOSE ?= 1
+ endif
+
++# nvfury clang-compat patch:
++# Handle clang-built kernels by detecting and adjusting for LLVM toolchain
++# CachyOS, Clear Linux, and other distros build kernels with clang
++ifeq ($(shell echo | $(CC) -E -dM - 2>/dev/null | grep -c __clang__),1)
++  LLVM ?= 1
++  export LLVM
++  $(info nvfury: Detected clang compiler - enabling LLVM mode)
++endif
++
+ include $(src)/header-presence-tests.mk
+
+ # Add NV_CONFTEST_* flags before everything else, so the rest of the build
+@@ -119,6 +128,13 @@ ifeq ($(NV_SPECTRE_V2),1)
+  NV_CONFTEST_CFLAGS += -mindirect-branch=thunk-extern -mindirect-branch-register
+ endif
+
++# nvfury clang-compat patch:
++# Skip GCC-specific retpoline flags when using clang
++ifeq ($(LLVM),1)
++  # Clang handles retpoline differently - no external thunk
++  NV_CONFTEST_CFLAGS := $(filter-out -mretpoline-external-thunk,$(NV_CONFTEST_CFLAGS))
++endif
++
+ NV_CONFTEST_CFLAGS += $(NV_CFLAGS_FROM_CONFTEST)
+
+ EXTRA_CFLAGS += $(NV_CONFTEST_CFLAGS)

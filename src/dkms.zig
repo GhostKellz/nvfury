@@ -82,7 +82,7 @@ pub fn register(allocator: std.mem.Allocator, options: DkmsOptions) !DkmsResult 
     child.stdout_behavior = .Inherit;
 
     const copy_term = try child.spawnAndWait();
-    if (copy_term.Exited != 0) {
+    if (copy_term != .Exited or copy_term.Exited != 0) {
         return DkmsResult{
             .success = false,
             .message = "Failed to copy source to DKMS directory",
@@ -118,7 +118,7 @@ pub fn register(allocator: std.mem.Allocator, options: DkmsOptions) !DkmsResult 
     add_child.stdout_behavior = .Inherit;
 
     const add_term = try add_child.spawnAndWait();
-    if (add_term.Exited != 0) {
+    if (add_term != .Exited or add_term.Exited != 0) {
         return DkmsResult{
             .success = false,
             .message = "DKMS add failed",
@@ -151,7 +151,7 @@ pub fn buildDkms(allocator: std.mem.Allocator, version: []const u8, kernel_versi
     child.stdout_behavior = .Inherit;
 
     const term = try child.spawnAndWait();
-    if (term.Exited != 0) {
+    if (term != .Exited or term.Exited != 0) {
         return DkmsResult{
             .success = false,
             .message = "DKMS build failed",
@@ -184,7 +184,7 @@ pub fn installDkms(allocator: std.mem.Allocator, version: []const u8, kernel_ver
     child.stdout_behavior = .Inherit;
 
     const term = try child.spawnAndWait();
-    if (term.Exited != 0) {
+    if (term != .Exited or term.Exited != 0) {
         return DkmsResult{
             .success = false,
             .message = "DKMS install failed",
@@ -213,7 +213,7 @@ pub fn unregister(allocator: std.mem.Allocator, version: []const u8) !DkmsResult
     child.stdout_behavior = .Inherit;
 
     const term = try child.spawnAndWait();
-    if (term.Exited != 0) {
+    if (term != .Exited or term.Exited != 0) {
         return DkmsResult{
             .success = false,
             .message = "DKMS remove failed",
