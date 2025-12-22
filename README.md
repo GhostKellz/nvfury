@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/logo/nvfury.png" alt="nvfury" width="400">
+</p>
+
 # nvfury
 
 <p align="center">
