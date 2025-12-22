@@ -79,7 +79,7 @@ pub fn main() !void {
     }
 
     if (std.mem.eql(u8, command, "rollback")) {
-        try cmdRollback(allocator, stdout, stderr);
+        try cmdRollback(allocator, &args, stdout, stderr);
         try stdout.flush();
         try stderr.flush();
         return;
@@ -427,13 +427,46 @@ fn cmdInstall(allocator: std.mem.Allocator, args: *std.process.ArgIterator, writ
         try writer.print("Reboot to load the new modules.\n", .{});
     } else {
         try writer.print("Mode:    Direct (manual rebuild needed on kernel update)\n", .{});
-        try writer.print("\nDirect installation copies modules to /lib/modules/$(uname -r)/\n", .{});
-        try writer.print("Note: You'll need to rebuild manually after kernel updates.\n", .{});
 
-        // For direct install, we'd copy .ko files to /lib/modules/.../
-        // This requires the built modules to exist
-        try err_writer.print("Direct installation not yet implemented.\n", .{});
-        try err_writer.print("Use --dkms for now (recommended anyway).\n", .{});
+        // Check if source directory is provided
+        const src = source_dir orelse {
+            try err_writer.print("Error: Source directory required for direct installation.\n", .{});
+            try err_writer.print("Use --source <path> to specify the built source directory.\n", .{});
+            return;
+        };
+
+        try writer.print("Source:  {s}\n", .{src});
+        try writer.print("\nInstalling modules directly...\n", .{});
+
+        const install_result = nvfury.install.install(allocator, .{
+            .source_path = src,
+            .create_backup = create_backup,
+            .verify = true,
+        }) catch |err| {
+            try err_writer.print("Installation failed: {}\n", .{err});
+            if (err == error.AccessDenied) {
+                try err_writer.print("Note: Module installation requires root privileges.\n", .{});
+                try err_writer.print("Try: sudo nvfury install --direct --source {s}\n", .{src});
+            }
+            return;
+        };
+
+        if (!install_result.success) {
+            try err_writer.print("Installation failed: {s}\n", .{install_result.error_message orelse "Unknown error"});
+            if (install_result.backup_path) |backup| {
+                try err_writer.print("Backup available at: {s}\n", .{backup});
+                try err_writer.print("Run 'nvfury rollback --backup {s}' to restore.\n", .{backup});
+            }
+            return;
+        }
+
+        try writer.print("Installation: OK\n", .{});
+        if (install_result.backup_path) |backup| {
+            try writer.print("Backup:  {s}\n", .{backup});
+        }
+        try writer.print("\nDirect installation complete!\n", .{});
+        try writer.print("Note: You'll need to rebuild manually after kernel updates.\n", .{});
+        try writer.print("Reboot to load the new modules.\n", .{});
     }
 }
 
@@ -516,15 +549,68 @@ fn cmdPatch(allocator: std.mem.Allocator, args: *std.process.ArgIterator, writer
     try writer.print("Unknown patch subcommand: {s}\n", .{subcommand});
 }
 
-fn cmdRollback(allocator: std.mem.Allocator, writer: *std.Io.Writer, err_writer: *std.Io.Writer) !void {
-    _ = allocator;
-    _ = err_writer;
+fn cmdRollback(allocator: std.mem.Allocator, args: *std.process.ArgIterator, writer: *std.Io.Writer, err_writer: *std.Io.Writer) !void {
+    var backup_path: ?[]const u8 = null;
+
+    // Parse options
+    while (args.next()) |arg| {
+        if (std.mem.eql(u8, arg, "--backup")) {
+            backup_path = args.next();
+        }
+    }
 
     try writer.print("nvfury rollback\n", .{});
     try writer.print("---------------------------------------------------\n", .{});
-    try writer.print("Looking for available backups...\n", .{});
-    try writer.print("\nNote: Rollback functionality requires a previous backup.\n", .{});
-    try writer.print("Backups are created during 'nvfury install'.\n", .{});
+
+    const backup = backup_path orelse {
+        // List available backups
+        try writer.print("Looking for available backups...\n", .{});
+
+        const backup_dir = nvfury.paths.backup;
+        var dir = std.fs.openDirAbsolute(backup_dir, .{ .iterate = true }) catch {
+            try writer.print("\nNo backups found at {s}\n", .{backup_dir});
+            try writer.print("Backups are created during 'nvfury install'.\n", .{});
+            return;
+        };
+        defer dir.close();
+
+        var count: u32 = 0;
+        var iter = dir.iterate();
+        try writer.print("\nAvailable backups:\n", .{});
+        while (try iter.next()) |entry| {
+            if (entry.kind == .directory) {
+                try writer.print("  {s}/{s}\n", .{ backup_dir, entry.name });
+                count += 1;
+            }
+        }
+
+        if (count == 0) {
+            try writer.print("  (none)\n", .{});
+        } else {
+            try writer.print("\nUse 'nvfury rollback --backup <path>' to restore.\n", .{});
+        }
+        return;
+    };
+
+    try writer.print("Backup:  {s}\n", .{backup});
+
+    // Get kernel version
+    const kernel_version = nvfury.builder.getKernelVersion(allocator) catch {
+        try err_writer.print("Error: Could not determine kernel version.\n", .{});
+        return;
+    };
+    defer allocator.free(kernel_version);
+
+    try writer.print("Kernel:  {s}\n", .{kernel_version});
+    try writer.print("\nRestoring modules from backup...\n", .{});
+
+    nvfury.install.restore(allocator, backup, kernel_version) catch |e| {
+        try err_writer.print("Rollback failed: {}\n", .{e});
+        return;
+    };
+
+    try writer.print("Rollback complete!\n", .{});
+    try writer.print("Reboot to load the restored modules.\n", .{});
 }
 
 fn cmdVersions(allocator: std.mem.Allocator, writer: *std.Io.Writer, err_writer: *std.Io.Writer) !void {

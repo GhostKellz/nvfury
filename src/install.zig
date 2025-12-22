@@ -114,15 +114,23 @@ pub fn install(allocator: std.mem.Allocator, options: InstallOptions) !InstallRe
 /// Create backup of existing modules
 pub fn createBackup(allocator: std.mem.Allocator, kernel_version: []const u8, backup_dir: []const u8) ![]u8 {
     // Create timestamped backup directory
-    const timestamp = std.time.timestamp();
+    const ts = std.posix.clock_gettime(.REALTIME) catch return error.SystemResources;
+    const timestamp: i64 = ts.sec;
     const backup_path = try std.fmt.allocPrint(allocator, "{s}/{s}-{d}/", .{ backup_dir, kernel_version, timestamp });
+    errdefer allocator.free(backup_path);
 
-    std.fs.makeDirAbsolute(backup_dir) catch |err| switch (err) {
+    // Create parent directories recursively using root fs
+    const root_dir = std.fs.openDirAbsolute("/", .{}) catch return error.SystemResources;
+    // backup_dir starts with / so strip it for sub_path
+    const backup_sub = if (backup_dir[0] == '/') backup_dir[1..] else backup_dir;
+    root_dir.makePath(backup_sub) catch |err| switch (err) {
         error.PathAlreadyExists => {},
         else => return err,
     };
 
-    std.fs.makeDirAbsolute(backup_path) catch |err| switch (err) {
+    // backup_path also starts with /
+    const path_sub = if (backup_path[0] == '/') backup_path[1..] else backup_path;
+    root_dir.makePath(path_sub) catch |err| switch (err) {
         error.PathAlreadyExists => {},
         else => return err,
     };
