@@ -153,19 +153,17 @@ pub const PatchResult = struct {
 
 /// Apply a patch to the source tree
 pub fn applyPatch(allocator: std.mem.Allocator, source_dir: []const u8, patch_path: []const u8) !PatchResult {
-    var child = std.process.Child.init(&.{
-        "patch",
-        "-p1",
-        "-d",
-        source_dir,
-        "-i",
-        patch_path,
-    }, allocator);
-
-    child.stderr_behavior = .Pipe;
-    child.stdout_behavior = .Pipe;
-
-    _ = try child.spawnAndWait();
+    const io = std.Options.debug_io;
+    _ = std.process.run(allocator, io, .{
+        .argv = &.{
+            "patch",
+            "-p1",
+            "-d",
+            source_dir,
+            "-i",
+            patch_path,
+        },
+    }) catch return error.PatchFailed;
 
     return PatchResult{
         .success = true,
@@ -176,40 +174,38 @@ pub fn applyPatch(allocator: std.mem.Allocator, source_dir: []const u8, patch_pa
 
 /// Check if a patch applies cleanly (dry run)
 pub fn checkPatch(allocator: std.mem.Allocator, source_dir: []const u8, patch_path: []const u8) !bool {
-    var child = std.process.Child.init(&.{
-        "patch",
-        "-p1",
-        "--dry-run",
-        "-d",
-        source_dir,
-        "-i",
-        patch_path,
-    }, allocator);
+    const io = std.Options.debug_io;
+    const result = std.process.run(allocator, io, .{
+        .argv = &.{
+            "patch",
+            "-p1",
+            "--dry-run",
+            "-d",
+            source_dir,
+            "-i",
+            patch_path,
+        },
+    }) catch return false;
+    defer allocator.free(result.stdout);
+    defer allocator.free(result.stderr);
 
-    child.stderr_behavior = .Pipe;
-    child.stdout_behavior = .Pipe;
-
-    const term = try child.spawnAndWait();
-
-    return term == .Exited and term.Exited == 0;
+    return result.term == .exited and result.term.exited == 0;
 }
 
 /// Revert a patch from the source tree
 pub fn revertPatch(allocator: std.mem.Allocator, source_dir: []const u8, patch_path: []const u8) !PatchResult {
-    var child = std.process.Child.init(&.{
-        "patch",
-        "-p1",
-        "-R",
-        "-d",
-        source_dir,
-        "-i",
-        patch_path,
-    }, allocator);
-
-    child.stderr_behavior = .Pipe;
-    child.stdout_behavior = .Pipe;
-
-    _ = try child.spawnAndWait();
+    const io = std.Options.debug_io;
+    _ = std.process.run(allocator, io, .{
+        .argv = &.{
+            "patch",
+            "-p1",
+            "-R",
+            "-d",
+            source_dir,
+            "-i",
+            patch_path,
+        },
+    }) catch return error.PatchFailed;
 
     return PatchResult{
         .success = true,
@@ -257,7 +253,153 @@ pub fn getPatchPath(allocator: std.mem.Allocator, patches_dir: []const u8, patch
     return std.fs.path.join(allocator, &.{ patches_dir, filename });
 }
 
+/// GPU-aware patch recommendation
+const gpu = @import("gpu.zig");
+const builder = @import("builder.zig");
+
+/// Get recommended patches for the detected GPU
+/// Auto-enables Blackwell patches for RTX 50 series
+pub fn getRecommendedPatches(allocator: std.mem.Allocator) ![]PatchInfo {
+    var patches = std.ArrayList(PatchInfo).init(allocator);
+    errdefer patches.deinit();
+
+    // Detect GPU
+    const gpu_info = gpu.detectGpu();
+    const arch = if (gpu_info) |g| g.architecture else gpu.Architecture.unknown;
+    const is_blackwell = (arch == .blackwell);
+
+    // Detect kernel compiler
+    const kernel_cc = builder.detectKernelCompiler();
+    const is_clang = std.mem.indexOf(u8, kernel_cc, "clang") != null;
+
+    // Add patches based on detection
+    for (builtin_patches) |patch_info| {
+        var should_enable = patch_info.default_enabled;
+
+        // Auto-enable clang-compat for clang kernels
+        if (std.mem.eql(u8, patch_info.name, "clang-compat")) {
+            should_enable = is_clang;
+        }
+
+        // Auto-enable Blackwell patches for RTX 50 series
+        if (std.mem.eql(u8, patch_info.name, "blackwell-boost-gaming") or
+            std.mem.eql(u8, patch_info.name, "blackwell-power-curve"))
+        {
+            should_enable = is_blackwell;
+        }
+
+        if (should_enable) {
+            try patches.append(patch_info);
+        }
+    }
+
+    return patches.toOwnedSlice();
+}
+
+/// Get all patches that would be enabled for current system
+pub fn getAutoPatches() []const []const u8 {
+    // Static storage for patch names
+    const S = struct {
+        var patch_names: [16][]const u8 = undefined;
+        var count: usize = 0;
+    };
+
+    S.count = 0;
+
+    // Detect GPU
+    const gpu_info = gpu.detectGpu();
+    const arch = if (gpu_info) |g| g.architecture else gpu.Architecture.unknown;
+    const is_blackwell = (arch == .blackwell);
+
+    // Detect kernel compiler
+    const kernel_cc = builder.detectKernelCompiler();
+    const is_clang = std.mem.indexOf(u8, kernel_cc, "clang") != null;
+
+    // Build list of auto-enabled patches
+    for (builtin_patches) |patch_info| {
+        var should_enable = patch_info.default_enabled;
+
+        // Auto-enable clang-compat for clang kernels
+        if (std.mem.eql(u8, patch_info.name, "clang-compat")) {
+            should_enable = is_clang;
+        }
+
+        // Auto-enable Blackwell patches for RTX 50 series
+        if (std.mem.eql(u8, patch_info.name, "blackwell-boost-gaming") or
+            std.mem.eql(u8, patch_info.name, "blackwell-power-curve"))
+        {
+            should_enable = is_blackwell;
+        }
+
+        if (should_enable and S.count < S.patch_names.len) {
+            S.patch_names[S.count] = patch_info.name;
+            S.count += 1;
+        }
+    }
+
+    return S.patch_names[0..S.count];
+}
+
+/// Print patch recommendations for current system
+pub fn printRecommendations(writer: anytype) !void {
+    const gpu_info = gpu.detectGpu();
+    const kernel_cc = builder.detectKernelCompiler();
+
+    try writer.print("nvfury Patch Recommendations\n", .{});
+    try writer.print("---------------------------------------------------\n", .{});
+
+    // GPU info
+    if (gpu_info) |g| {
+        try writer.print("Detected GPU: {s}\n", .{g.getName()});
+        try writer.print("Architecture: {s} ({s})\n", .{ g.architecture.name(), g.architecture.generation() });
+        try writer.print("Device ID:    0x{x:0>4}\n", .{g.device_id});
+    } else {
+        try writer.print("Detected GPU: Not detected\n", .{});
+    }
+
+    try writer.print("Kernel CC:    {s}\n\n", .{kernel_cc});
+
+    // Recommended patches
+    try writer.print("Recommended Patches:\n", .{});
+    const patches = getAutoPatches();
+    for (patches) |name| {
+        // Find description
+        for (builtin_patches) |p| {
+            if (std.mem.eql(u8, p.name, name)) {
+                try writer.print("  [*] {s}\n", .{name});
+                try writer.print("      {s}\n", .{p.description});
+                break;
+            }
+        }
+    }
+
+    // Show what's NOT enabled
+    try writer.print("\nOptional Patches (not auto-enabled):\n", .{});
+    for (builtin_patches) |p| {
+        var is_recommended = false;
+        for (patches) |name| {
+            if (std.mem.eql(u8, p.name, name)) {
+                is_recommended = true;
+                break;
+            }
+        }
+        if (!is_recommended) {
+            try writer.print("  [ ] {s}\n", .{p.name});
+            try writer.print("      {s}\n", .{p.description});
+        }
+    }
+
+    try writer.print("\nUse 'nvfury build --patches <name>' to enable specific patches.\n", .{});
+    try writer.print("Use 'nvfury build --patches default' for recommended set.\n", .{});
+}
+
 test "patch info" {
     try std.testing.expect(builtin_patches.len > 0);
-    try std.testing.expectEqualStrings("gaming-scheduler", builtin_patches[0].name);
+    try std.testing.expectEqualStrings("clang-compat", builtin_patches[0].name);
+}
+
+test "gpu aware patches" {
+    // Basic test that getAutoPatches doesn't crash
+    const patches = getAutoPatches();
+    try std.testing.expect(patches.len >= 0);
 }

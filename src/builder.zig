@@ -54,7 +54,110 @@ pub const BuildOptions = struct {
     jobs: u32 = 0,
     /// Dry run - don't actually build
     dry_run: bool = false,
+    /// Use ccache for faster rebuilds (auto-detected if not specified)
+    use_ccache: ?bool = null,
+    /// Custom ccache directory (null = default ~/.cache/ccache)
+    ccache_dir: ?[]const u8 = null,
 };
+
+/// Ccache statistics
+pub const CcacheStats = struct {
+    cache_hits: u64,
+    cache_misses: u64,
+    cache_size: []const u8,
+    max_size: []const u8,
+    hit_rate: f32,
+};
+
+/// Check if ccache is available
+pub fn isCcacheAvailable() bool {
+    const io = std.Options.debug_io;
+    const result = std.process.run(std.heap.page_allocator, io, .{
+        .argv = &.{ "which", "ccache" },
+    }) catch return false;
+    std.heap.page_allocator.free(result.stdout);
+    std.heap.page_allocator.free(result.stderr);
+    return result.term == .exited and result.term.exited == 0;
+}
+
+/// Get ccache statistics (caller must free strings)
+pub fn getCcacheStats(allocator: std.mem.Allocator) !CcacheStats {
+    const io = std.Options.debug_io;
+    const result = std.process.run(allocator, io, .{
+        .argv = &.{ "ccache", "-s" },
+    }) catch return error.SystemResources;
+    defer allocator.free(result.stdout);
+    defer allocator.free(result.stderr);
+
+    return parseCcacheStats(allocator, result.stdout);
+}
+
+/// Parse ccache stats output
+fn parseCcacheStats(allocator: std.mem.Allocator, output: []const u8) !CcacheStats {
+    var stats = CcacheStats{
+        .cache_hits = 0,
+        .cache_misses = 0,
+        .cache_size = try allocator.dupe(u8, "0 B"),
+        .max_size = try allocator.dupe(u8, "0 B"),
+        .hit_rate = 0.0,
+    };
+
+    var lines = std.mem.splitScalar(u8, output, '\n');
+    while (lines.next()) |line| {
+        if (std.mem.indexOf(u8, line, "cache hit")) |_| {
+            // Parse "cache hit (direct)" or "Hits:" lines
+            const num = parseNumber(line);
+            stats.cache_hits += num;
+        } else if (std.mem.indexOf(u8, line, "cache miss")) |_| {
+            const num = parseNumber(line);
+            stats.cache_misses += num;
+        } else if (std.mem.indexOf(u8, line, "Cache size")) |_| {
+            if (std.mem.indexOf(u8, line, ":")) |colon| {
+                const value = std.mem.trim(u8, line[colon + 1 ..], " \t\r\n");
+                allocator.free(stats.cache_size);
+                stats.cache_size = try allocator.dupe(u8, value);
+            }
+        } else if (std.mem.indexOf(u8, line, "Max cache size")) |_| {
+            if (std.mem.indexOf(u8, line, ":")) |colon| {
+                const value = std.mem.trim(u8, line[colon + 1 ..], " \t\r\n");
+                allocator.free(stats.max_size);
+                stats.max_size = try allocator.dupe(u8, value);
+            }
+        }
+    }
+
+    const total = stats.cache_hits + stats.cache_misses;
+    if (total > 0) {
+        stats.hit_rate = @as(f32, @floatFromInt(stats.cache_hits)) / @as(f32, @floatFromInt(total)) * 100.0;
+    }
+
+    return stats;
+}
+
+/// Parse a number from a string (finds first sequence of digits)
+fn parseNumber(s: []const u8) u64 {
+    var num: u64 = 0;
+    var in_number = false;
+
+    for (s) |c| {
+        if (std.ascii.isDigit(c)) {
+            num = num * 10 + (c - '0');
+            in_number = true;
+        } else if (in_number) {
+            break;
+        }
+    }
+
+    return num;
+}
+
+/// Clear ccache
+pub fn clearCcache(allocator: std.mem.Allocator) !void {
+    const io = std.Options.debug_io;
+    _ = std.process.run(allocator, io, .{
+        .argv = &.{ "ccache", "-C" },
+    }) catch return error.SystemResources;
+}
 
 /// Build NVIDIA open kernel modules
 pub fn build(allocator: std.mem.Allocator, options: BuildOptions) !BuildResult {
@@ -68,8 +171,8 @@ pub fn build(allocator: std.mem.Allocator, options: BuildOptions) !BuildResult {
     const kernel_dir = try std.fmt.allocPrint(allocator, "/lib/modules/{s}/build", .{kernel_version});
     defer allocator.free(kernel_dir);
 
-    // Verify kernel headers exist
-    std.fs.accessAbsolute(kernel_dir, .{}) catch {
+    // Verify kernel headers exist - try to open the directory
+    const kernel_fd = std.posix.openat(std.posix.AT.FDCWD, kernel_dir, .{ .DIRECTORY = true }, 0) catch {
         return BuildResult{
             .output_path = "",
             .modules = &.{},
@@ -78,6 +181,7 @@ pub fn build(allocator: std.mem.Allocator, options: BuildOptions) !BuildResult {
             .error_message = "Kernel headers not found. Install linux-headers package.",
         };
     };
+    std.posix.close(kernel_fd);
 
     // Detect kernel compiler (clang vs gcc) by reading /proc/version
     const kernel_cc = detectKernelCompiler();
@@ -95,7 +199,18 @@ pub fn build(allocator: std.mem.Allocator, options: BuildOptions) !BuildResult {
     }
 
     // Determine compiler - use what the kernel was built with
-    const cc = if (options.use_zig_cc) "zig cc" else kernel_cc;
+    // Optionally wrap with ccache for faster rebuilds
+    const use_ccache = options.use_ccache orelse isCcacheAvailable();
+    const cc = blk: {
+        if (options.use_zig_cc) {
+            break :blk "zig cc";
+        } else if (use_ccache) {
+            // ccache will wrap the actual compiler
+            break :blk if (std.mem.eql(u8, kernel_cc, "clang")) "ccache clang" else "ccache gcc";
+        } else {
+            break :blk kernel_cc;
+        }
+    };
 
     // Determine job count
     const jobs = if (options.jobs == 0)
@@ -123,41 +238,69 @@ pub fn build(allocator: std.mem.Allocator, options: BuildOptions) !BuildResult {
     const cc_env = try std.fmt.allocPrint(allocator, "CC={s}", .{cc});
     defer allocator.free(cc_env);
 
-    var env_map = try std.process.getEnvMap(allocator);
-    defer env_map.deinit();
-    // Use EXTRA_CFLAGS to append our flags without overwriting NVIDIA's required flags
-    try env_map.put("EXTRA_CFLAGS", cflags.items);
-    try env_map.put("CC", cc);
-    try env_map.put("KDIR", kernel_dir);
+    // Build environment variable assignments for make
+    var env_str: std.ArrayListUnmanaged(u8) = .{};
+    defer env_str.deinit(allocator);
 
-    // For clang-built kernels, set LLVM=1 to tell Kbuild to use LLVM-compatible flags
-    // Also set LD, AR, NM, etc. to LLVM tools for consistent toolchain
-    if (std.mem.eql(u8, kernel_cc, "clang")) {
-        try env_map.put("LLVM", "1");
-        try env_map.put("LD", "ld.lld");
-        try env_map.put("AR", "llvm-ar");
-        try env_map.put("NM", "llvm-nm");
-        try env_map.put("OBJCOPY", "llvm-objcopy");
-        try env_map.put("OBJDUMP", "llvm-objdump");
-        try env_map.put("STRIP", "llvm-strip");
+    try env_str.appendSlice(allocator, "EXTRA_CFLAGS='");
+    try env_str.appendSlice(allocator, cflags.items);
+    try env_str.appendSlice(allocator, "' CC='");
+    try env_str.appendSlice(allocator, cc);
+    try env_str.appendSlice(allocator, "' KDIR='");
+    try env_str.appendSlice(allocator, kernel_dir);
+    try env_str.appendSlice(allocator, "'");
+
+    // Set ccache directory if using ccache and custom dir specified
+    if (use_ccache) {
+        if (options.ccache_dir) |ccache_dir| {
+            try env_str.appendSlice(allocator, " CCACHE_DIR='");
+            try env_str.appendSlice(allocator, ccache_dir);
+            try env_str.appendSlice(allocator, "'");
+        }
+        try env_str.appendSlice(allocator, " CCACHE_COMPILERCHECK=content");
     }
 
-    var child = std.process.Child.init(&.{
-        "make",
+    // For clang-built kernels, set LLVM=1 to tell Kbuild to use LLVM-compatible flags
+    if (std.mem.eql(u8, kernel_cc, "clang")) {
+        try env_str.appendSlice(allocator, " LLVM=1 LD=ld.lld AR=llvm-ar NM=llvm-nm OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip");
+    }
+
+    // Build the shell command
+    const make_cmd = try std.fmt.allocPrint(allocator, "{s} make {s} -C {s} modules", .{
+        env_str.items,
         jobs_str,
-        "-C",
         options.source_dir,
-        "modules",
-    }, allocator);
+    });
+    defer allocator.free(make_cmd);
 
-    child.env_map = &env_map;
-    child.stderr_behavior = .Inherit;
-    child.stdout_behavior = .Inherit;
+    const io = std.Options.debug_io;
+    var child = std.process.spawn(io, .{
+        .argv = &.{ "sh", "-c", make_cmd },
+        .stdin = .inherit,
+        .stdout = .inherit,
+        .stderr = .inherit,
+    }) catch {
+        return BuildResult{
+            .output_path = "",
+            .modules = &.{},
+            .duration_ns = 0,
+            .success = false,
+            .error_message = "Failed to spawn build process",
+        };
+    };
 
-    const term = try child.spawnAndWait();
+    const term = child.wait(io) catch {
+        return BuildResult{
+            .output_path = "",
+            .modules = &.{},
+            .duration_ns = 0,
+            .success = false,
+            .error_message = "Failed waiting for build process",
+        };
+    };
     const duration_ns: u64 = if (timer) |*t| t.read() else 0;
 
-    if (term != .Exited or term.Exited != 0) {
+    if (term != .exited or term.exited != 0) {
         return BuildResult{
             .output_path = "",
             .modules = &.{},
@@ -178,77 +321,65 @@ pub fn build(allocator: std.mem.Allocator, options: BuildOptions) !BuildResult {
 
 /// Get current kernel version
 pub fn getKernelVersion(allocator: std.mem.Allocator) ![]u8 {
-    var child = std.process.Child.init(&.{ "uname", "-r" }, allocator);
-    child.stdout_behavior = .Pipe;
+    const io = std.Options.debug_io;
+    const result = std.process.run(allocator, io, .{
+        .argv = &.{ "uname", "-r" },
+    }) catch return error.SystemResources;
+    defer allocator.free(result.stdout);
+    defer allocator.free(result.stderr);
 
-    try child.spawn();
-
-    var buf: [256]u8 = undefined;
-    var total: usize = 0;
-
-    // Read all output from stdout pipe
-    if (child.stdout) |stdout| {
-        while (total < buf.len) {
-            const len = stdout.read(buf[total..]) catch break;
-            if (len == 0) break;
-            total += len;
-        }
+    if (result.term != .exited or result.term.exited != 0) {
+        return error.SystemResources;
     }
 
-    _ = try child.wait();
-
     // Trim trailing newline
-    var end = total;
-    while (end > 0 and (buf[end - 1] == '\n' or buf[end - 1] == '\r')) {
+    var end = result.stdout.len;
+    while (end > 0 and (result.stdout[end - 1] == '\n' or result.stdout[end - 1] == '\r')) {
         end -= 1;
     }
 
-    return allocator.dupe(u8, buf[0..end]);
+    return allocator.dupe(u8, result.stdout[0..end]);
 }
 
 /// Check if kernel headers are available
 pub fn hasKernelHeaders(kernel_version: []const u8) bool {
     var buf: [256]u8 = undefined;
     const path = std.fmt.bufPrint(&buf, "/lib/modules/{s}/build", .{kernel_version}) catch return false;
-    return std.fs.accessAbsolute(path, .{}) != error.FileNotFound;
+    // Try to open the directory to check if it exists
+    const fd = std.posix.openat(std.posix.AT.FDCWD, path, .{ .DIRECTORY = true }, 0) catch return false;
+    std.posix.close(fd);
+    return true;
 }
 
 /// Get Zig version for logging
 pub fn getZigVersion(allocator: std.mem.Allocator) ![]u8 {
-    var child = std.process.Child.init(&.{ "zig", "version" }, allocator);
-    child.stdout_behavior = .Pipe;
+    const io = std.Options.debug_io;
+    const result = std.process.run(allocator, io, .{
+        .argv = &.{ "zig", "version" },
+    }) catch return error.SystemResources;
+    defer allocator.free(result.stdout);
+    defer allocator.free(result.stderr);
 
-    try child.spawn();
-
-    var buf: [64]u8 = undefined;
-    var total: usize = 0;
-
-    if (child.stdout) |stdout| {
-        while (total < buf.len) {
-            const len = stdout.read(buf[total..]) catch break;
-            if (len == 0) break;
-            total += len;
-        }
+    if (result.term != .exited or result.term.exited != 0) {
+        return error.SystemResources;
     }
 
-    _ = try child.wait();
-
-    var end = total;
-    while (end > 0 and (buf[end - 1] == '\n' or buf[end - 1] == '\r')) {
+    var end = result.stdout.len;
+    while (end > 0 and (result.stdout[end - 1] == '\n' or result.stdout[end - 1] == '\r')) {
         end -= 1;
     }
 
-    return allocator.dupe(u8, buf[0..end]);
+    return allocator.dupe(u8, result.stdout[0..end]);
 }
 
 /// Detect what compiler was used to build the running kernel
 /// Reads /proc/version to check for "clang" or "gcc"
 pub fn detectKernelCompiler() []const u8 {
-    const file = std.fs.openFileAbsolute("/proc/version", .{}) catch return "gcc";
-    defer file.close();
+    const fd = std.posix.openat(std.posix.AT.FDCWD, "/proc/version", .{}, 0) catch return "gcc";
+    defer std.posix.close(fd);
 
     var buf: [512]u8 = undefined;
-    const len = file.read(&buf) catch return "gcc";
+    const len = std.posix.read(fd, &buf) catch return "gcc";
     const version_str = buf[0..len];
 
     // Check if kernel was built with clang

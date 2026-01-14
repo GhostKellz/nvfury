@@ -56,33 +56,30 @@ pub const DkmsOptions = struct {
 
 /// Register module with DKMS
 pub fn register(allocator: std.mem.Allocator, options: DkmsOptions) !DkmsResult {
+    const io = std.Options.debug_io;
     const dkms_base = "/usr/src";
     const dkms_dir = try std.fmt.allocPrint(allocator, "{s}/nvidia-open-{s}", .{ dkms_base, options.version });
     defer allocator.free(dkms_dir);
 
-    // Create DKMS source directory
-    std.fs.makeDirAbsolute(dkms_dir) catch |err| switch (err) {
-        error.PathAlreadyExists => {},
-        else => return DkmsResult{
-            .success = false,
-            .message = "Failed to create DKMS directory",
-        },
+    // Create DKMS source directory using mkdir -p
+    _ = std.process.run(allocator, io, .{
+        .argv = &.{ "mkdir", "-p", dkms_dir },
+    }) catch return DkmsResult{
+        .success = false,
+        .message = "Failed to create DKMS directory",
     };
 
     // Copy source to DKMS directory
-    // In practice, we'd use a proper recursive copy
-    var child = std.process.Child.init(&.{
-        "cp",
-        "-r",
-        options.source_dir,
-        dkms_dir,
-    }, allocator);
+    const copy_result = std.process.run(allocator, io, .{
+        .argv = &.{ "cp", "-r", options.source_dir, dkms_dir },
+    }) catch return DkmsResult{
+        .success = false,
+        .message = "Failed to copy source to DKMS directory",
+    };
+    allocator.free(copy_result.stdout);
+    allocator.free(copy_result.stderr);
 
-    child.stderr_behavior = .Inherit;
-    child.stdout_behavior = .Inherit;
-
-    const copy_term = try child.spawnAndWait();
-    if (copy_term != .Exited or copy_term.Exited != 0) {
+    if (copy_result.term != .exited or copy_result.term.exited != 0) {
         return DkmsResult{
             .success = false,
             .message = "Failed to copy source to DKMS directory",
@@ -100,25 +97,33 @@ pub fn register(allocator: std.mem.Allocator, options: DkmsOptions) !DkmsResult 
     });
     defer allocator.free(conf_content);
 
-    const conf_file = try std.fs.createFileAbsolute(conf_path, .{});
-    defer conf_file.close();
-    try conf_file.writeAll(conf_content);
+    // Write config file using posix
+    const fd = std.posix.openat(std.posix.AT.FDCWD, conf_path, .{ .ACCMODE = .WRONLY, .CREAT = true, .TRUNC = true }, 0o644) catch {
+        return DkmsResult{
+            .success = false,
+            .message = "Failed to create dkms.conf",
+        };
+    };
+    defer std.posix.close(fd);
+    const write_result = std.c.write(fd, conf_content.ptr, conf_content.len);
+    if (write_result < 0) {
+        return DkmsResult{
+            .success = false,
+            .message = "Failed to write dkms.conf",
+        };
+    }
 
     // Run dkms add
-    var add_child = std.process.Child.init(&.{
-        "dkms",
-        "add",
-        "-m",
-        "nvidia-open",
-        "-v",
-        options.version,
-    }, allocator);
+    const add_result = std.process.run(allocator, io, .{
+        .argv = &.{ "dkms", "add", "-m", "nvidia-open", "-v", options.version },
+    }) catch return DkmsResult{
+        .success = false,
+        .message = "DKMS add failed",
+    };
+    allocator.free(add_result.stdout);
+    allocator.free(add_result.stderr);
 
-    add_child.stderr_behavior = .Inherit;
-    add_child.stdout_behavior = .Inherit;
-
-    const add_term = try add_child.spawnAndWait();
-    if (add_term != .Exited or add_term.Exited != 0) {
+    if (add_result.term != .exited or add_result.term.exited != 0) {
         return DkmsResult{
             .success = false,
             .message = "DKMS add failed",
@@ -133,133 +138,80 @@ pub fn register(allocator: std.mem.Allocator, options: DkmsOptions) !DkmsResult 
 
 /// Build module via DKMS
 pub fn buildDkms(allocator: std.mem.Allocator, version: []const u8, kernel_version: ?[]const u8) !DkmsResult {
+    const io = std.Options.debug_io;
     const kver = kernel_version orelse try builder.getKernelVersion(allocator);
     defer if (kernel_version == null) allocator.free(kver);
 
-    var child = std.process.Child.init(&.{
-        "dkms",
-        "build",
-        "-m",
-        "nvidia-open",
-        "-v",
-        version,
-        "-k",
-        kver,
-    }, allocator);
+    var child = std.process.spawn(io, .{
+        .argv = &.{ "dkms", "build", "-m", "nvidia-open", "-v", version, "-k", kver },
+        .stdin = .inherit,
+        .stdout = .inherit,
+        .stderr = .inherit,
+    }) catch return DkmsResult{ .success = false, .message = "DKMS build failed to start" };
 
-    child.stderr_behavior = .Inherit;
-    child.stdout_behavior = .Inherit;
-
-    const term = try child.spawnAndWait();
-    if (term != .Exited or term.Exited != 0) {
-        return DkmsResult{
-            .success = false,
-            .message = "DKMS build failed",
-        };
+    const term = child.wait(io) catch return DkmsResult{ .success = false, .message = "DKMS build failed" };
+    if (term != .exited or term.exited != 0) {
+        return DkmsResult{ .success = false, .message = "DKMS build failed" };
     }
 
-    return DkmsResult{
-        .success = true,
-        .message = "DKMS build completed",
-    };
+    return DkmsResult{ .success = true, .message = "DKMS build completed" };
 }
 
 /// Install module via DKMS
 pub fn installDkms(allocator: std.mem.Allocator, version: []const u8, kernel_version: ?[]const u8) !DkmsResult {
+    const io = std.Options.debug_io;
     const kver = kernel_version orelse try builder.getKernelVersion(allocator);
     defer if (kernel_version == null) allocator.free(kver);
 
-    var child = std.process.Child.init(&.{
-        "dkms",
-        "install",
-        "-m",
-        "nvidia-open",
-        "-v",
-        version,
-        "-k",
-        kver,
-    }, allocator);
+    var child = std.process.spawn(io, .{
+        .argv = &.{ "dkms", "install", "-m", "nvidia-open", "-v", version, "-k", kver },
+        .stdin = .inherit,
+        .stdout = .inherit,
+        .stderr = .inherit,
+    }) catch return DkmsResult{ .success = false, .message = "DKMS install failed to start" };
 
-    child.stderr_behavior = .Inherit;
-    child.stdout_behavior = .Inherit;
-
-    const term = try child.spawnAndWait();
-    if (term != .Exited or term.Exited != 0) {
-        return DkmsResult{
-            .success = false,
-            .message = "DKMS install failed",
-        };
+    const term = child.wait(io) catch return DkmsResult{ .success = false, .message = "DKMS install failed" };
+    if (term != .exited or term.exited != 0) {
+        return DkmsResult{ .success = false, .message = "DKMS install failed" };
     }
 
-    return DkmsResult{
-        .success = true,
-        .message = "DKMS install completed",
-    };
+    return DkmsResult{ .success = true, .message = "DKMS install completed" };
 }
 
 /// Remove module from DKMS
 pub fn unregister(allocator: std.mem.Allocator, version: []const u8) !DkmsResult {
-    var child = std.process.Child.init(&.{
-        "dkms",
-        "remove",
-        "-m",
-        "nvidia-open",
-        "-v",
-        version,
-        "--all",
-    }, allocator);
+    const io = std.Options.debug_io;
+    const result = std.process.run(allocator, io, .{
+        .argv = &.{ "dkms", "remove", "-m", "nvidia-open", "-v", version, "--all" },
+    }) catch return DkmsResult{ .success = false, .message = "DKMS remove failed" };
+    allocator.free(result.stdout);
+    allocator.free(result.stderr);
 
-    child.stderr_behavior = .Inherit;
-    child.stdout_behavior = .Inherit;
-
-    const term = try child.spawnAndWait();
-    if (term != .Exited or term.Exited != 0) {
-        return DkmsResult{
-            .success = false,
-            .message = "DKMS remove failed",
-        };
+    if (result.term != .exited or result.term.exited != 0) {
+        return DkmsResult{ .success = false, .message = "DKMS remove failed" };
     }
 
-    return DkmsResult{
-        .success = true,
-        .message = "Module removed from DKMS",
-    };
+    return DkmsResult{ .success = true, .message = "Module removed from DKMS" };
 }
 
 /// Get DKMS status for nvidia-open
 pub fn getStatus(allocator: std.mem.Allocator) ![]u8 {
-    var child = std.process.Child.init(&.{
-        "dkms",
-        "status",
-        "-m",
-        "nvidia-open",
-    }, allocator);
+    const io = std.Options.debug_io;
+    const result = std.process.run(allocator, io, .{
+        .argv = &.{ "dkms", "status", "-m", "nvidia-open" },
+    }) catch return error.SystemResources;
+    defer allocator.free(result.stderr);
 
-    child.stdout_behavior = .Pipe;
-    child.stderr_behavior = .Pipe;
-
-    try child.spawn();
-
-    var buf = try allocator.alloc(u8, 4096);
-    var total: usize = 0;
-
-    if (child.stdout) |stdout| {
-        while (total < buf.len) {
-            const len = stdout.read(buf[total..]) catch break;
-            if (len == 0) break;
-            total += len;
-        }
-    }
-
-    _ = try child.wait();
-
-    // Shrink to actual size
-    return allocator.realloc(buf, total) catch buf[0..total];
+    // Return stdout directly (caller owns it)
+    return result.stdout;
 }
 
 /// Check if DKMS is available
 pub fn isDkmsAvailable() bool {
-    return std.fs.accessAbsolute("/usr/sbin/dkms", .{}) != error.FileNotFound;
+    // Try to open the file to check if it exists
+    const fd = std.posix.openat(std.posix.AT.FDCWD, "/usr/sbin/dkms", .{}, 0) catch return false;
+    std.posix.close(fd);
+    return true;
 }
 
 test "dkms module" {

@@ -18,6 +18,7 @@ pub const install = @import("install.zig");
 pub const tune = @import("tune.zig");
 pub const dkms = @import("dkms.zig");
 pub const config = @import("config.zig");
+pub const gpu = @import("gpu.zig");
 
 /// Default paths for nvfury
 pub const paths = struct {

@@ -18,14 +18,12 @@ pub fn build(b: *std.Build) void {
             .root_source_file = b.path("src/main.zig"),
             .target = target,
             .optimize = optimize,
+            .link_libc = true, // For process spawning and filesystem operations
             .imports = &.{
                 .{ .name = "nvfury", .module = mod },
             },
         }),
     });
-
-    // Link libc for process spawning and filesystem operations
-    exe.linkLibC();
 
     // Install the executable
     b.installArtifact(exe);

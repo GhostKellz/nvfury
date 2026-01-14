@@ -32,8 +32,8 @@ pub fn applyPreset(allocator: std.mem.Allocator, preset: config.TunePreset) !Tun
 
     const conf_path = "/etc/modprobe.d/nvfury.conf";
 
-    // Write configuration file
-    const file = std.fs.createFileAbsolute(conf_path, .{}) catch |err| {
+    // Write configuration file using posix
+    const fd = std.posix.openat(std.posix.AT.FDCWD, conf_path, .{ .ACCMODE = .WRONLY, .CREAT = true, .TRUNC = true }, 0o644) catch |err| {
         return TuneResult{
             .success = false,
             .preset = preset,
@@ -44,16 +44,17 @@ pub fn applyPreset(allocator: std.mem.Allocator, preset: config.TunePreset) !Tun
             },
         };
     };
-    defer file.close();
+    defer std.posix.close(fd);
 
-    file.writeAll(conf_content) catch {
+    const write_result = std.c.write(fd, conf_content.ptr, conf_content.len);
+    if (write_result < 0) {
         return TuneResult{
             .success = false,
             .preset = preset,
             .config_path = conf_path,
             .message = "Failed to write config content",
         };
-    };
+    }
 
     return TuneResult{
         .success = true,
@@ -75,15 +76,15 @@ pub fn getCurrentParams() CurrentParams {
         .enable_resizable_bar = null,
     };
 
-    // Try to read nvfury.conf
+    // Try to read nvfury.conf using posix
     const conf_path = "/etc/modprobe.d/nvfury.conf";
-    const file = std.fs.openFileAbsolute(conf_path, .{}) catch return params;
-    defer file.close();
+    const fd = std.posix.openat(std.posix.AT.FDCWD, conf_path, .{}, 0) catch return params;
+    defer std.posix.close(fd);
 
     var buf: [4096]u8 = undefined;
     var total: usize = 0;
     while (total < buf.len) {
-        const n = file.read(buf[total..]) catch return params;
+        const n = std.posix.read(fd, buf[total..]) catch return params;
         if (n == 0) break;
         total += n;
     }

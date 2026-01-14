@@ -3,33 +3,32 @@
 //! CLI entry point for building and managing optimized NVIDIA drivers.
 
 const std = @import("std");
+const Io = std.Io;
 const nvfury = @import("nvfury");
 
-pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = gpa.deinit();
-    const allocator = gpa.allocator();
+pub fn main(init: std.process.Init) !void {
+    const io = init.io;
+    const allocator = init.arena.allocator();
 
-    // Set up stdout/stderr writers using Zig 0.16 fs.File.Writer API
+    // Set up stdout/stderr writers using Zig 0.16 Io.File.Writer API
     var stdout_buf: [4096]u8 = undefined;
     var stderr_buf: [4096]u8 = undefined;
-    var stdout_writer = std.fs.File.Writer.init(std.fs.File.stdout(), &stdout_buf);
-    var stderr_writer = std.fs.File.Writer.init(std.fs.File.stderr(), &stderr_buf);
+    var stdout_writer = Io.File.stdout().writer(io, &stdout_buf);
+    var stderr_writer = Io.File.stderr().writer(io, &stderr_buf);
     const stdout = &stdout_writer.interface;
     const stderr = &stderr_writer.interface;
 
-    // Parse command line args
-    var args = try std.process.argsWithAllocator(allocator);
-    defer args.deinit();
+    // Parse command line args using Zig 0.16 API
+    const args = try init.minimal.args.toSlice(allocator);
 
     // Skip program name
-    _ = args.next();
-
-    const command = args.next() orelse {
+    if (args.len < 2) {
         try printUsage(stdout);
         try stdout.flush();
         return;
-    };
+    }
+
+    const command = args[1];
 
     if (std.mem.eql(u8, command, "version") or std.mem.eql(u8, command, "--version") or std.mem.eql(u8, command, "-v")) {
         try printVersion(stdout);
@@ -51,35 +50,35 @@ pub fn main() !void {
     }
 
     if (std.mem.eql(u8, command, "build")) {
-        try cmdBuild(allocator, &args, stdout, stderr);
+        try cmdBuild(allocator, args[2..], stdout, stderr);
         try stdout.flush();
         try stderr.flush();
         return;
     }
 
     if (std.mem.eql(u8, command, "install")) {
-        try cmdInstall(allocator, &args, stdout, stderr);
+        try cmdInstall(allocator, args[2..], stdout, stderr);
         try stdout.flush();
         try stderr.flush();
         return;
     }
 
     if (std.mem.eql(u8, command, "tune")) {
-        try cmdTune(allocator, &args, stdout, stderr);
+        try cmdTune(allocator, args[2..], stdout, stderr);
         try stdout.flush();
         try stderr.flush();
         return;
     }
 
     if (std.mem.eql(u8, command, "patch")) {
-        try cmdPatch(allocator, &args, stdout, stderr);
+        try cmdPatch(allocator, args[2..], stdout, stderr);
         try stdout.flush();
         try stderr.flush();
         return;
     }
 
     if (std.mem.eql(u8, command, "rollback")) {
-        try cmdRollback(allocator, &args, stdout, stderr);
+        try cmdRollback(allocator, args[2..], stdout, stderr);
         try stdout.flush();
         try stderr.flush();
         return;
@@ -92,17 +91,51 @@ pub fn main() !void {
         return;
     }
 
+    if (std.mem.eql(u8, command, "recommend")) {
+        try cmdRecommend(stdout);
+        try stdout.flush();
+        return;
+    }
+
+    if (std.mem.eql(u8, command, "check-update") or std.mem.eql(u8, command, "update-check")) {
+        try cmdCheckUpdate(allocator, stdout, stderr);
+        try stdout.flush();
+        try stderr.flush();
+        return;
+    }
+
+    if (std.mem.eql(u8, command, "cache")) {
+        try cmdCache(allocator, args[2..], stdout, stderr);
+        try stdout.flush();
+        try stderr.flush();
+        return;
+    }
+
+    if (std.mem.eql(u8, command, "profile")) {
+        try cmdProfile(allocator, args[2..], stdout, stderr);
+        try stdout.flush();
+        try stderr.flush();
+        return;
+    }
+
+    if (std.mem.eql(u8, command, "gpus")) {
+        try cmdGpus(stdout, stderr);
+        try stdout.flush();
+        try stderr.flush();
+        return;
+    }
+
     try stderr.print("Unknown command: {s}\n", .{command});
     try stderr.print("Run 'nvfury help' for usage information.\n", .{});
     try stderr.flush();
 }
 
-fn printVersion(writer: *std.Io.Writer) !void {
+fn printVersion(writer: *Io.Writer) !void {
     try writer.print("nvfury {s}\n", .{nvfury.version.string});
     try writer.print("NVIDIA Open Kernel Module Forge\n", .{});
 }
 
-fn printUsage(writer: *std.Io.Writer) !void {
+fn printUsage(writer: *Io.Writer) !void {
     try writer.print(
         \\nvfury - NVIDIA Open Kernel Module Forge
         \\
@@ -115,11 +148,27 @@ fn printUsage(writer: *std.Io.Writer) !void {
         \\  install             Install built modules
         \\  tune <preset>       Apply module parameter preset
         \\  patch <subcommand>  Manage patches
+        \\  profile <subcommand> Export/import tuning profiles (JSON)
+        \\  gpus                Detect and list all GPUs (multi-GPU support)
+        \\  recommend           Show recommended patches for your GPU
         \\  status              Show current driver status
         \\  versions            List available driver versions from GitHub
         \\  rollback            Restore previous driver
+        \\  check-update        Check for available driver updates
+        \\  cache               Manage build cache (ccache)
         \\  version             Show version information
         \\  help                Show this help message
+        \\
+        \\Profile Subcommands:
+        \\  profile list              List available presets
+        \\  profile show <preset>     Show preset parameters
+        \\  profile export <preset> <file>  Export preset to JSON
+        \\  profile import <file>     Import and preview profile
+        \\  profile import <file> --apply   Import and apply profile
+        \\
+        \\Cache Subcommands:
+        \\  cache status        Show cache statistics
+        \\  cache clear         Clear the build cache
         \\
         \\Build Options:
         \\  --version <ver>     Build specific driver version
@@ -156,7 +205,7 @@ fn printUsage(writer: *std.Io.Writer) !void {
     , .{});
 }
 
-fn printStatus(allocator: std.mem.Allocator, writer: *std.Io.Writer, err_writer: *std.Io.Writer) !void {
+fn printStatus(allocator: std.mem.Allocator, writer: *Io.Writer, err_writer: *Io.Writer) !void {
     try writer.print("nvfury {s}\n", .{nvfury.version.string});
     try writer.print("---------------------------------------------------\n", .{});
 
@@ -200,24 +249,29 @@ fn printStatus(allocator: std.mem.Allocator, writer: *std.Io.Writer, err_writer:
     try nvfury.tune.printStatus(writer);
 }
 
-fn cmdBuild(allocator: std.mem.Allocator, args: *std.process.ArgIterator, writer: *std.Io.Writer, err_writer: *std.Io.Writer) !void {
+fn cmdBuild(allocator: std.mem.Allocator, args: []const [:0]const u8, writer: *Io.Writer, err_writer: *Io.Writer) !void {
     var version: ?[]const u8 = null;
     var source_dir: ?[]const u8 = null;
     var dry_run = false;
     var patches_arg: ?[]const u8 = null;
 
     // Parse options
-    while (args.next()) |arg| {
+    var i: usize = 0;
+    while (i < args.len) : (i += 1) {
+        const arg = args[i];
         if (std.mem.eql(u8, arg, "--version")) {
-            version = args.next();
+            i += 1;
+            if (i < args.len) version = args[i];
         } else if (std.mem.eql(u8, arg, "--source")) {
-            source_dir = args.next();
+            i += 1;
+            if (i < args.len) source_dir = args[i];
         } else if (std.mem.eql(u8, arg, "--dry-run")) {
             dry_run = true;
         } else if (std.mem.eql(u8, arg, "--latest")) {
             version = null; // Fetch latest
         } else if (std.mem.eql(u8, arg, "--patches")) {
-            patches_arg = args.next();
+            i += 1;
+            if (i < args.len) patches_arg = args[i];
         }
     }
 
@@ -337,14 +391,16 @@ fn cmdBuild(allocator: std.mem.Allocator, args: *std.process.ArgIterator, writer
     }
 }
 
-fn cmdInstall(allocator: std.mem.Allocator, args: *std.process.ArgIterator, writer: *std.Io.Writer, err_writer: *std.Io.Writer) !void {
+fn cmdInstall(allocator: std.mem.Allocator, args: []const [:0]const u8, writer: *Io.Writer, err_writer: *Io.Writer) !void {
     var use_dkms = true;
     var create_backup = true;
     var source_dir: ?[]const u8 = null;
     var version: ?[]const u8 = null;
 
     // Parse options
-    while (args.next()) |arg| {
+    var i: usize = 0;
+    while (i < args.len) : (i += 1) {
+        const arg = args[i];
         if (std.mem.eql(u8, arg, "--direct")) {
             use_dkms = false;
         } else if (std.mem.eql(u8, arg, "--dkms")) {
@@ -352,9 +408,11 @@ fn cmdInstall(allocator: std.mem.Allocator, args: *std.process.ArgIterator, writ
         } else if (std.mem.eql(u8, arg, "--no-backup")) {
             create_backup = false;
         } else if (std.mem.eql(u8, arg, "--source")) {
-            source_dir = args.next();
+            i += 1;
+            if (i < args.len) source_dir = args[i];
         } else if (std.mem.eql(u8, arg, "--version")) {
-            version = args.next();
+            i += 1;
+            if (i < args.len) version = args[i];
         }
     }
 
@@ -470,8 +528,8 @@ fn cmdInstall(allocator: std.mem.Allocator, args: *std.process.ArgIterator, writ
     }
 }
 
-fn cmdTune(allocator: std.mem.Allocator, args: *std.process.ArgIterator, writer: *std.Io.Writer, err_writer: *std.Io.Writer) !void {
-    const subcommand = args.next() orelse "status";
+fn cmdTune(allocator: std.mem.Allocator, args: []const [:0]const u8, writer: *Io.Writer, err_writer: *Io.Writer) !void {
+    const subcommand = if (args.len > 0) args[0] else "status";
 
     if (std.mem.eql(u8, subcommand, "status")) {
         try nvfury.tune.printStatus(writer);
@@ -518,11 +576,11 @@ fn cmdTune(allocator: std.mem.Allocator, args: *std.process.ArgIterator, writer:
     }
 }
 
-fn cmdPatch(allocator: std.mem.Allocator, args: *std.process.ArgIterator, writer: *std.Io.Writer, err_writer: *std.Io.Writer) !void {
+fn cmdPatch(allocator: std.mem.Allocator, args: []const [:0]const u8, writer: *Io.Writer, err_writer: *Io.Writer) !void {
     _ = allocator;
     _ = err_writer;
 
-    const subcommand = args.next() orelse "list";
+    const subcommand = if (args.len > 0) args[0] else "list";
 
     if (std.mem.eql(u8, subcommand, "list")) {
         try writer.print("Available Patches:\n", .{});
@@ -537,10 +595,11 @@ fn cmdPatch(allocator: std.mem.Allocator, args: *std.process.ArgIterator, writer
     }
 
     if (std.mem.eql(u8, subcommand, "apply")) {
-        const patch_name = args.next() orelse {
+        if (args.len < 2) {
             try writer.print("Usage: nvfury patch apply <patch-name>\n", .{});
             return;
-        };
+        }
+        const patch_name = args[1];
         try writer.print("Applying patch: {s}\n", .{patch_name});
         try writer.print("Note: Requires source directory from build.\n", .{});
         return;
@@ -549,13 +608,16 @@ fn cmdPatch(allocator: std.mem.Allocator, args: *std.process.ArgIterator, writer
     try writer.print("Unknown patch subcommand: {s}\n", .{subcommand});
 }
 
-fn cmdRollback(allocator: std.mem.Allocator, args: *std.process.ArgIterator, writer: *std.Io.Writer, err_writer: *std.Io.Writer) !void {
+fn cmdRollback(allocator: std.mem.Allocator, args: []const [:0]const u8, writer: *Io.Writer, err_writer: *Io.Writer) !void {
     var backup_path: ?[]const u8 = null;
 
     // Parse options
-    while (args.next()) |arg| {
+    var i: usize = 0;
+    while (i < args.len) : (i += 1) {
+        const arg = args[i];
         if (std.mem.eql(u8, arg, "--backup")) {
-            backup_path = args.next();
+            i += 1;
+            if (i < args.len) backup_path = args[i];
         }
     }
 
@@ -567,17 +629,18 @@ fn cmdRollback(allocator: std.mem.Allocator, args: *std.process.ArgIterator, wri
         try writer.print("Looking for available backups...\n", .{});
 
         const backup_dir = nvfury.paths.backup;
-        var dir = std.fs.openDirAbsolute(backup_dir, .{ .iterate = true }) catch {
+        const dir_io = std.Options.debug_io;
+        var dir = Io.Dir.openDirAbsolute(dir_io, backup_dir, .{ .iterate = true }) catch {
             try writer.print("\nNo backups found at {s}\n", .{backup_dir});
             try writer.print("Backups are created during 'nvfury install'.\n", .{});
             return;
         };
-        defer dir.close();
+        defer dir.close(dir_io);
 
         var count: u32 = 0;
         var iter = dir.iterate();
         try writer.print("\nAvailable backups:\n", .{});
-        while (try iter.next()) |entry| {
+        while (try iter.next(dir_io)) |entry| {
             if (entry.kind == .directory) {
                 try writer.print("  {s}/{s}\n", .{ backup_dir, entry.name });
                 count += 1;
@@ -613,7 +676,7 @@ fn cmdRollback(allocator: std.mem.Allocator, args: *std.process.ArgIterator, wri
     try writer.print("Reboot to load the restored modules.\n", .{});
 }
 
-fn cmdVersions(allocator: std.mem.Allocator, writer: *std.Io.Writer, err_writer: *std.Io.Writer) !void {
+fn cmdVersions(allocator: std.mem.Allocator, writer: *Io.Writer, err_writer: *Io.Writer) !void {
     try writer.print("nvfury versions\n", .{});
     try writer.print("---------------------------------------------------\n", .{});
     try writer.print("Fetching available versions from GitHub...\n\n", .{});
@@ -641,6 +704,283 @@ fn cmdVersions(allocator: std.mem.Allocator, writer: *std.Io.Writer, err_writer:
     }
 
     try writer.print("\nUse 'nvfury build --version <ver>' to build a specific version.\n", .{});
+}
+
+fn cmdRecommend(writer: *Io.Writer) !void {
+    try nvfury.patch.printRecommendations(writer);
+}
+
+fn cmdCheckUpdate(allocator: std.mem.Allocator, writer: *Io.Writer, err_writer: *Io.Writer) !void {
+    try writer.print("nvfury check-update\n", .{});
+    try writer.print("---------------------------------------------------\n", .{});
+    try writer.print("Checking for updates from GitHub...\n\n", .{});
+
+    const info = nvfury.fetch.getUpdateInfo(allocator) catch |e| {
+        try err_writer.print("Error checking for updates: {}\n", .{e});
+        return;
+    };
+    defer allocator.free(info);
+
+    try writer.print("{s}\n", .{info});
+}
+
+fn cmdCache(allocator: std.mem.Allocator, args: []const [:0]const u8, writer: *Io.Writer, err_writer: *Io.Writer) !void {
+    const subcommand = if (args.len > 0) args[0] else "status";
+
+    try writer.print("nvfury cache\n", .{});
+    try writer.print("---------------------------------------------------\n", .{});
+
+    // Check if ccache is available
+    if (!nvfury.builder.isCcacheAvailable()) {
+        try err_writer.print("ccache is not installed.\n", .{});
+        try err_writer.print("Install with: pacman -S ccache (or apt install ccache)\n", .{});
+        try err_writer.print("\nBuild cache speeds up incremental builds significantly.\n", .{});
+        return;
+    }
+
+    if (std.mem.eql(u8, subcommand, "status")) {
+        try writer.print("Build Cache Status (ccache)\n\n", .{});
+
+        const stats = nvfury.builder.getCcacheStats(allocator) catch |e| {
+            try err_writer.print("Error getting cache stats: {}\n", .{e});
+            return;
+        };
+        defer allocator.free(stats.cache_size);
+        defer allocator.free(stats.max_size);
+
+        try writer.print("  Cache Hits:    {d}\n", .{stats.cache_hits});
+        try writer.print("  Cache Misses:  {d}\n", .{stats.cache_misses});
+        try writer.print("  Hit Rate:      {d:.1}%\n", .{stats.hit_rate});
+        try writer.print("  Cache Size:    {s}\n", .{stats.cache_size});
+        try writer.print("  Max Size:      {s}\n", .{stats.max_size});
+        try writer.print("\nccache will automatically cache compilation results.\n", .{});
+        try writer.print("Subsequent builds of the same version will be faster.\n", .{});
+        return;
+    }
+
+    if (std.mem.eql(u8, subcommand, "clear")) {
+        try writer.print("Clearing build cache...\n", .{});
+
+        nvfury.builder.clearCcache(allocator) catch |e| {
+            try err_writer.print("Error clearing cache: {}\n", .{e});
+            return;
+        };
+
+        try writer.print("Build cache cleared.\n", .{});
+        return;
+    }
+
+    try err_writer.print("Unknown cache subcommand: {s}\n", .{subcommand});
+    try err_writer.print("Available: status, clear\n", .{});
+}
+
+fn cmdProfile(allocator: std.mem.Allocator, args: []const [:0]const u8, writer: *Io.Writer, err_writer: *Io.Writer) !void {
+    const subcommand = if (args.len > 0) args[0] else "list";
+
+    try writer.print("nvfury profile\n", .{});
+    try writer.print("---------------------------------------------------\n", .{});
+
+    if (std.mem.eql(u8, subcommand, "list")) {
+        try writer.print("Available presets for export:\n\n", .{});
+        inline for (@typeInfo(nvfury.config.TunePreset).@"enum".fields) |field| {
+            const preset: nvfury.config.TunePreset = @enumFromInt(field.value);
+            try writer.print("  {s: <12} - {s}\n", .{ field.name, preset.description() });
+        }
+        try writer.print("\nExport a preset:  nvfury profile export <preset> <file.json>\n", .{});
+        try writer.print("Import a profile: nvfury profile import <file.json>\n", .{});
+        return;
+    }
+
+    if (std.mem.eql(u8, subcommand, "export")) {
+        if (args.len < 2) {
+            try err_writer.print("Usage: nvfury profile export <preset> <output.json>\n", .{});
+            try err_writer.print("Presets: gaming, balanced, quiet, benchmark\n", .{});
+            return;
+        }
+        const preset_name = args[1];
+
+        if (args.len < 3) {
+            try err_writer.print("Usage: nvfury profile export <preset> <output.json>\n", .{});
+            try err_writer.print("Please specify output file path.\n", .{});
+            return;
+        }
+        const output_path = args[2];
+
+        // Parse preset name
+        const preset: nvfury.config.TunePreset = if (std.mem.eql(u8, preset_name, "gaming"))
+            .gaming
+        else if (std.mem.eql(u8, preset_name, "balanced"))
+            .balanced
+        else if (std.mem.eql(u8, preset_name, "quiet"))
+            .quiet
+        else if (std.mem.eql(u8, preset_name, "benchmark"))
+            .benchmark
+        else {
+            try err_writer.print("Unknown preset: {s}\n", .{preset_name});
+            try err_writer.print("Available: gaming, balanced, quiet, benchmark\n", .{});
+            return;
+        };
+
+        try writer.print("Exporting preset: {s}\n", .{@tagName(preset)});
+        try writer.print("Output file:      {s}\n\n", .{output_path});
+
+        // Create profile from preset and export
+        var profile = nvfury.config.Profile.fromPreset(preset, allocator) catch |e| {
+            try err_writer.print("Error creating profile: {}\n", .{e});
+            return;
+        };
+        defer profile.deinit();
+
+        nvfury.config.exportProfile(allocator, profile, output_path) catch |e| {
+            try err_writer.print("Error exporting profile: {}\n", .{e});
+            return;
+        };
+
+        try writer.print("Profile exported successfully!\n", .{});
+        try writer.print("Share this file with others or use 'nvfury profile import' to apply.\n", .{});
+        return;
+    }
+
+    if (std.mem.eql(u8, subcommand, "import")) {
+        if (args.len < 2) {
+            try err_writer.print("Usage: nvfury profile import <input.json>\n", .{});
+            return;
+        }
+        const input_path = args[1];
+
+        try writer.print("Importing profile: {s}\n\n", .{input_path});
+
+        var profile = nvfury.config.importProfile(allocator, input_path) catch |e| {
+            try err_writer.print("Error importing profile: {}\n", .{e});
+            if (e == error.FileNotFound) {
+                try err_writer.print("File not found: {s}\n", .{input_path});
+            }
+            return;
+        };
+        defer profile.deinit();
+
+        try writer.print("Profile Name:    {s}\n", .{profile.name});
+        try writer.print("Description:     {s}\n", .{profile.description});
+        try writer.print("Version:         {d}\n\n", .{profile.version});
+
+        try writer.print("Module Parameters:\n", .{});
+        try writer.print("  UsePageAttributeTable:   {}\n", .{profile.params.use_page_attribute_table});
+        try writer.print("  EnablePCIeGen3:          {}\n", .{profile.params.enable_pcie_gen3});
+        try writer.print("  EnableMSI:               {}\n", .{profile.params.enable_msi});
+        try writer.print("  PreserveVideoMemory:     {}\n", .{profile.params.preserve_video_memory});
+        try writer.print("  DynamicPowerMgmt:        0x{x:0>2}\n", .{profile.params.dynamic_power_management});
+        try writer.print("  TempFilePath:            {s}\n", .{profile.params.temporary_file_path});
+        try writer.print("  EnableGpuFirmware:       {} (GSP)\n", .{profile.params.enable_gpu_firmware});
+        try writer.print("  EnableResizableBar:      {} (ReBAR)\n", .{profile.params.enable_resizable_bar});
+
+        // Check if --apply flag is provided
+        var apply = false;
+        for (args) |arg| {
+            if (std.mem.eql(u8, arg, "--apply")) {
+                apply = true;
+            }
+        }
+
+        if (apply) {
+            try writer.print("\nApplying imported profile...\n", .{});
+
+            // Generate modprobe config and write it
+            const conf = profile.params.toModprobeConf(allocator) catch |e| {
+                try err_writer.print("Error generating config: {}\n", .{e});
+                return;
+            };
+            defer allocator.free(conf);
+
+            // Write to modprobe.d
+            const config_path = "/etc/modprobe.d/nvidia-nvfury.conf";
+            const fd = std.posix.openat(std.posix.AT.FDCWD, config_path, .{ .ACCMODE = .WRONLY, .CREAT = true, .TRUNC = true }, 0o644) catch |e| {
+                try err_writer.print("Error writing config: {}\n", .{e});
+                if (e == error.AccessDenied) {
+                    try err_writer.print("Note: Run with sudo to apply profile.\n", .{});
+                }
+                return;
+            };
+            defer std.posix.close(fd);
+
+            const write_result = std.c.write(fd, conf.ptr, conf.len);
+            if (write_result < 0) {
+                try err_writer.print("Error writing config content\n", .{});
+                return;
+            }
+
+            try writer.print("Configuration written to: {s}\n", .{config_path});
+            try writer.print("Reload modules or reboot to apply changes.\n", .{});
+        } else {
+            try writer.print("\nTo apply this profile, run:\n", .{});
+            try writer.print("  sudo nvfury profile import {s} --apply\n", .{input_path});
+        }
+        return;
+    }
+
+    if (std.mem.eql(u8, subcommand, "show")) {
+        if (args.len < 2) {
+            try err_writer.print("Usage: nvfury profile show <preset>\n", .{});
+            try err_writer.print("Presets: gaming, balanced, quiet, benchmark\n", .{});
+            return;
+        }
+        const preset_name = args[1];
+
+        // Parse preset name
+        const preset: nvfury.config.TunePreset = if (std.mem.eql(u8, preset_name, "gaming"))
+            .gaming
+        else if (std.mem.eql(u8, preset_name, "balanced"))
+            .balanced
+        else if (std.mem.eql(u8, preset_name, "quiet"))
+            .quiet
+        else if (std.mem.eql(u8, preset_name, "benchmark"))
+            .benchmark
+        else {
+            try err_writer.print("Unknown preset: {s}\n", .{preset_name});
+            try err_writer.print("Available: gaming, balanced, quiet, benchmark\n", .{});
+            return;
+        };
+
+        try writer.print("Preset: {s}\n", .{@tagName(preset)});
+        try writer.print("Description: {s}\n\n", .{preset.description()});
+
+        const params = nvfury.config.ModuleParams.fromPreset(preset);
+        try writer.print("Module Parameters:\n", .{});
+        try writer.print("  UsePageAttributeTable:   {}\n", .{params.use_page_attribute_table});
+        try writer.print("  EnablePCIeGen3:          {}\n", .{params.enable_pcie_gen3});
+        try writer.print("  EnableMSI:               {}\n", .{params.enable_msi});
+        try writer.print("  PreserveVideoMemory:     {}\n", .{params.preserve_video_memory});
+        try writer.print("  DynamicPowerMgmt:        0x{x:0>2}\n", .{params.dynamic_power_management});
+        try writer.print("  TempFilePath:            {s}\n", .{params.temporary_file_path});
+        try writer.print("  EnableGpuFirmware:       {} (GSP)\n", .{params.enable_gpu_firmware});
+        try writer.print("  EnableResizableBar:      {} (ReBAR)\n", .{params.enable_resizable_bar});
+        return;
+    }
+
+    try err_writer.print("Unknown profile subcommand: {s}\n", .{subcommand});
+    try err_writer.print("Available: list, export, import, show\n", .{});
+}
+
+fn cmdGpus(writer: *Io.Writer, err_writer: *Io.Writer) !void {
+    _ = err_writer;
+
+    try writer.print("nvfury gpus\n", .{});
+    try writer.print("---------------------------------------------------\n", .{});
+
+    const info = nvfury.gpu.detectAllGpus();
+    try nvfury.gpu.printMultiGpuStatus(&info, writer);
+
+    // Recommendations for multi-GPU setups
+    if (info.nvidia_count > 1) {
+        try writer.print("Multi-NVIDIA Setup Notes:\n", .{});
+        try writer.print("  - Use CUDA_VISIBLE_DEVICES to select specific GPU\n", .{});
+        try writer.print("  - Consider SLI/NVLink if supported by your GPUs\n", .{});
+        try writer.print("  - nvfury builds will apply to all NVIDIA GPUs\n", .{});
+    }
+
+    if (info.nvidia_count == 0) {
+        try writer.print("No NVIDIA GPUs detected.\n", .{});
+        try writer.print("Ensure NVIDIA drivers are installed and GPU is recognized.\n", .{});
+    }
 }
 
 test "main module compiles" {

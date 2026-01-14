@@ -60,14 +60,16 @@ pub fn install(allocator: std.mem.Allocator, options: InstallOptions) !InstallRe
     }
 
     // Create destination directory
-    std.fs.makeDirAbsolute(dest_path) catch |err| switch (err) {
-        error.PathAlreadyExists => {},
-        else => return InstallResult{
+    const io = std.Options.debug_io;
+    _ = std.process.run(allocator, io, .{
+        .argv = &.{ "mkdir", "-p", dest_path },
+    }) catch {
+        return InstallResult{
             .success = false,
             .backup_path = backup_path,
             .installed_modules = &.{},
             .error_message = "Failed to create module directory",
-        },
+        };
     };
 
     // Copy each module
@@ -78,7 +80,9 @@ pub fn install(allocator: std.mem.Allocator, options: InstallOptions) !InstallRe
         const dst = try std.fs.path.join(allocator, &.{ dest_path, module_name });
         defer allocator.free(dst);
 
-        std.fs.copyFileAbsolute(src, dst, .{}) catch {
+        const cp_result = std.process.run(allocator, io, .{
+            .argv = &.{ "cp", src, dst },
+        }) catch {
             return InstallResult{
                 .success = false,
                 .backup_path = backup_path,
@@ -86,6 +90,16 @@ pub fn install(allocator: std.mem.Allocator, options: InstallOptions) !InstallRe
                 .error_message = "Failed to copy module files",
             };
         };
+        allocator.free(cp_result.stdout);
+        allocator.free(cp_result.stderr);
+        if (cp_result.term != .exited or cp_result.term.exited != 0) {
+            return InstallResult{
+                .success = false,
+                .backup_path = backup_path,
+                .installed_modules = &.{},
+                .error_message = "Failed to copy module files",
+            };
+        }
     }
 
     // Run depmod
@@ -119,21 +133,11 @@ pub fn createBackup(allocator: std.mem.Allocator, kernel_version: []const u8, ba
     const backup_path = try std.fmt.allocPrint(allocator, "{s}/{s}-{d}/", .{ backup_dir, kernel_version, timestamp });
     errdefer allocator.free(backup_path);
 
-    // Create parent directories recursively using root fs
-    const root_dir = std.fs.openDirAbsolute("/", .{}) catch return error.SystemResources;
-    // backup_dir starts with / so strip it for sub_path
-    const backup_sub = if (backup_dir[0] == '/') backup_dir[1..] else backup_dir;
-    root_dir.makePath(backup_sub) catch |err| switch (err) {
-        error.PathAlreadyExists => {},
-        else => return err,
-    };
-
-    // backup_path also starts with /
-    const path_sub = if (backup_path[0] == '/') backup_path[1..] else backup_path;
-    root_dir.makePath(path_sub) catch |err| switch (err) {
-        error.PathAlreadyExists => {},
-        else => return err,
-    };
+    // Create parent directories recursively
+    const io = std.Options.debug_io;
+    _ = std.process.run(allocator, io, .{
+        .argv = &.{ "mkdir", "-p", backup_path },
+    }) catch return error.SystemResources;
 
     // Copy existing modules to backup
     const src_path = try getModulePath(allocator, kernel_version);
@@ -146,10 +150,11 @@ pub fn createBackup(allocator: std.mem.Allocator, kernel_version: []const u8, ba
         const dst = try std.fs.path.join(allocator, &.{ backup_path, module_name });
         defer allocator.free(dst);
 
-        std.fs.copyFileAbsolute(src, dst, .{}) catch |err| switch (err) {
-            error.FileNotFound => continue, // Module doesn't exist, skip
-            else => return err,
-        };
+        const cp_result = std.process.run(allocator, io, .{
+            .argv = &.{ "cp", src, dst },
+        }) catch continue; // Module doesn't exist or copy failed, skip
+        allocator.free(cp_result.stdout);
+        allocator.free(cp_result.stderr);
     }
 
     return backup_path;
@@ -157,6 +162,7 @@ pub fn createBackup(allocator: std.mem.Allocator, kernel_version: []const u8, ba
 
 /// Restore modules from backup
 pub fn restore(allocator: std.mem.Allocator, backup_path: []const u8, kernel_version: []const u8) !void {
+    const io = std.Options.debug_io;
     const dest_path = try getModulePath(allocator, kernel_version);
     defer allocator.free(dest_path);
 
@@ -167,42 +173,43 @@ pub fn restore(allocator: std.mem.Allocator, backup_path: []const u8, kernel_ver
         const dst = try std.fs.path.join(allocator, &.{ dest_path, module_name });
         defer allocator.free(dst);
 
-        std.fs.copyFileAbsolute(src, dst, .{}) catch continue;
+        const cp_result = std.process.run(allocator, io, .{
+            .argv = &.{ "cp", src, dst },
+        }) catch continue;
+        allocator.free(cp_result.stdout);
+        allocator.free(cp_result.stderr);
     }
 
     try runDepmod(allocator, kernel_version);
 }
 
 /// Run depmod to rebuild module dependencies
-fn runDepmod(allocator: std.mem.Allocator, kernel_version: []const u8) !void {
-    var child = std.process.Child.init(&.{
-        "depmod",
-        "-a",
-        kernel_version,
-    }, allocator);
+fn runDepmod(_: std.mem.Allocator, kernel_version: []const u8) !void {
+    const io = std.Options.debug_io;
+    var child = std.process.spawn(io, .{
+        .argv = &.{ "depmod", "-a", kernel_version },
+        .stdin = .inherit,
+        .stdout = .inherit,
+        .stderr = .inherit,
+    }) catch return error.SystemResources;
 
-    child.stderr_behavior = .Inherit;
-    child.stdout_behavior = .Inherit;
-
-    _ = try child.spawnAndWait();
+    _ = child.wait(io) catch return error.SystemResources;
 }
 
 /// Verify modules can be loaded (using modinfo)
 fn verifyModulesLoad(allocator: std.mem.Allocator) !bool {
+    const io = std.Options.debug_io;
     for (builder.nvidia_modules) |module_name| {
         // Strip .ko extension
         const name = module_name[0 .. module_name.len - 3];
 
-        var child = std.process.Child.init(&.{
-            "modinfo",
-            name,
-        }, allocator);
+        const result = std.process.run(allocator, io, .{
+            .argv = &.{ "modinfo", name },
+        }) catch return false;
+        allocator.free(result.stdout);
+        allocator.free(result.stderr);
 
-        child.stderr_behavior = .Pipe;
-        child.stdout_behavior = .Pipe;
-
-        const term = try child.spawnAndWait();
-        if (term != .Exited or term.Exited != 0) {
+        if (result.term != .exited or result.term.exited != 0) {
             return false;
         }
     }
@@ -211,6 +218,7 @@ fn verifyModulesLoad(allocator: std.mem.Allocator) !bool {
 
 /// Unload NVIDIA modules (for update)
 pub fn unloadModules(allocator: std.mem.Allocator) !void {
+    const io = std.Options.debug_io;
     // Unload in reverse dependency order
     const unload_order = [_][]const u8{
         "nvidia_drm",
@@ -220,30 +228,26 @@ pub fn unloadModules(allocator: std.mem.Allocator) !void {
     };
 
     for (unload_order) |module| {
-        var child = std.process.Child.init(&.{
-            "modprobe",
-            "-r",
-            module,
-        }, allocator);
-
-        child.stderr_behavior = .Pipe;
-        child.stdout_behavior = .Pipe;
-
-        _ = child.spawnAndWait() catch continue;
+        const result = std.process.run(allocator, io, .{
+            .argv = &.{ "modprobe", "-r", module },
+        }) catch continue;
+        allocator.free(result.stdout);
+        allocator.free(result.stderr);
     }
 }
 
 /// Load NVIDIA modules
 pub fn loadModules(allocator: std.mem.Allocator) !void {
-    var child = std.process.Child.init(&.{
-        "modprobe",
-        "nvidia",
-    }, allocator);
+    _ = allocator;
+    const io = std.Options.debug_io;
+    var child = std.process.spawn(io, .{
+        .argv = &.{ "modprobe", "nvidia" },
+        .stdin = .inherit,
+        .stdout = .inherit,
+        .stderr = .inherit,
+    }) catch return error.SystemResources;
 
-    child.stderr_behavior = .Inherit;
-    child.stdout_behavior = .Inherit;
-
-    _ = try child.spawnAndWait();
+    _ = child.wait(io) catch return error.SystemResources;
 }
 
 test "install module" {
