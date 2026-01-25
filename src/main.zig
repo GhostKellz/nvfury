@@ -98,7 +98,56 @@ pub fn main(init: std.process.Init) !void {
     }
 
     if (std.mem.eql(u8, command, "check-update") or std.mem.eql(u8, command, "update-check")) {
-        try cmdCheckUpdate(allocator, stdout, stderr);
+        try cmdCheckUpdate(allocator, args[2..], stdout, stderr);
+        try stdout.flush();
+        try stderr.flush();
+        return;
+    }
+
+    if (std.mem.eql(u8, command, "update-daemon") or std.mem.eql(u8, command, "daemon")) {
+        try cmdUpdateDaemon(allocator, args[2..], stdout, stderr);
+        try stdout.flush();
+        try stderr.flush();
+        return;
+    }
+
+    if (std.mem.eql(u8, command, "build-cache")) {
+        try cmdBuildCache(allocator, args[2..], stdout, stderr);
+        try stdout.flush();
+        try stderr.flush();
+        return;
+    }
+
+    if (std.mem.eql(u8, command, "prime")) {
+        try cmdPrime(allocator, args[2..], stdout, stderr);
+        try stdout.flush();
+        try stderr.flush();
+        return;
+    }
+
+    if (std.mem.eql(u8, command, "sign")) {
+        try cmdSign(allocator, args[2..], stdout, stderr);
+        try stdout.flush();
+        try stderr.flush();
+        return;
+    }
+
+    if (std.mem.eql(u8, command, "benchmark")) {
+        try cmdBenchmark(allocator, args[2..], stdout, stderr);
+        try stdout.flush();
+        try stderr.flush();
+        return;
+    }
+
+    if (std.mem.eql(u8, command, "config")) {
+        try cmdConfig(allocator, args[2..], stdout, stderr);
+        try stdout.flush();
+        try stderr.flush();
+        return;
+    }
+
+    if (std.mem.eql(u8, command, "preflight") or std.mem.eql(u8, command, "check")) {
+        try cmdPreflight(allocator, stdout, stderr);
         try stdout.flush();
         try stderr.flush();
         return;
@@ -120,6 +169,13 @@ pub fn main(init: std.process.Init) !void {
 
     if (std.mem.eql(u8, command, "gpus")) {
         try cmdGpus(stdout, stderr);
+        try stdout.flush();
+        try stderr.flush();
+        return;
+    }
+
+    if (std.mem.eql(u8, command, "uninstall")) {
+        try cmdUninstall(allocator, args[2..], stdout, stderr);
         try stdout.flush();
         try stderr.flush();
         return;
@@ -154,8 +210,16 @@ fn printUsage(writer: *Io.Writer) !void {
         \\  status              Show current driver status
         \\  versions            List available driver versions from GitHub
         \\  rollback            Restore previous driver
+        \\  uninstall           Remove nvfury-installed drivers
         \\  check-update        Check for available driver updates
-        \\  cache               Manage build cache (ccache)
+        \\  update-daemon       Manage automatic update checking (systemd timer)
+        \\  prime <subcommand>  Manage hybrid graphics (PRIME offload)
+        \\  sign <subcommand>   SecureBoot module signing
+        \\  benchmark <subcmd>  Performance benchmarking
+        \\  config <subcommand> Configuration management
+        \\  preflight           Pre-build compatibility checks
+        \\  cache               Manage ccache for compilation
+        \\  build-cache         Manage source hash cache (skip redundant rebuilds)
         \\  version             Show version information
         \\  help                Show this help message
         \\
@@ -166,16 +230,49 @@ fn printUsage(writer: *Io.Writer) !void {
         \\  profile import <file>     Import and preview profile
         \\  profile import <file> --apply   Import and apply profile
         \\
-        \\Cache Subcommands:
-        \\  cache status        Show cache statistics
-        \\  cache clear         Clear the build cache
+        \\Cache Subcommands (ccache):
+        \\  cache status        Show ccache statistics
+        \\  cache clear         Clear ccache
+        \\
+        \\Build Cache Subcommands (source hash):
+        \\  build-cache status  Show cached builds and source hashes
+        \\  build-cache clear   Clear all cached build metadata
+        \\
+        \\Update Daemon Subcommands:
+        \\  update-daemon enable   Install systemd timer for auto-checking
+        \\  update-daemon disable  Remove systemd timer
+        \\  update-daemon status   Show timer status and last check
+        \\
+        \\PRIME (Hybrid Graphics) Subcommands:
+        \\  prime status        Show current graphics mode
+        \\  prime offload <cmd> Run application on NVIDIA GPU
+        \\  prime setup         Configure PRIME (X11/modprobe/udev)
+        \\
+        \\SecureBoot Signing Subcommands:
+        \\  sign status         Show signing key status
+        \\  sign setup          Generate MOK signing key
+        \\  sign enroll         Enroll MOK certificate (requires reboot)
+        \\
+        \\Benchmark Subcommands:
+        \\  benchmark run       Run performance benchmark suite
+        \\  benchmark export <file>  Export results to JSON
+        \\
+        \\Config Subcommands:
+        \\  config show         Show current configuration
+        \\  config set <k> <v>  Set configuration value
+        \\  config reset        Reset to defaults
         \\
         \\Build Options:
         \\  --version <ver>     Build specific driver version
         \\  --source <path>     Build from local source directory
         \\  --latest            Fetch and build latest release
         \\  --patches <list>    Apply patches (comma-separated or 'default')
+        \\  --force, -f         Force rebuild even if source unchanged
         \\  --dry-run           Show what would be done
+        \\
+        \\Check-Update Options:
+        \\  --notify            Send desktop notification if update available
+        \\  --force, -f         Check even if recently checked
         \\
         \\Install Options:
         \\  --dkms              Install via DKMS (auto-rebuild on kernel update)
@@ -254,6 +351,7 @@ fn cmdBuild(allocator: std.mem.Allocator, args: []const [:0]const u8, writer: *I
     var source_dir: ?[]const u8 = null;
     var dry_run = false;
     var patches_arg: ?[]const u8 = null;
+    var force_rebuild = false;
 
     // Parse options
     var i: usize = 0;
@@ -272,6 +370,8 @@ fn cmdBuild(allocator: std.mem.Allocator, args: []const [:0]const u8, writer: *I
         } else if (std.mem.eql(u8, arg, "--patches")) {
             i += 1;
             if (i < args.len) patches_arg = args[i];
+        } else if (std.mem.eql(u8, arg, "--force") or std.mem.eql(u8, arg, "-f")) {
+            force_rebuild = true;
         }
     }
 
@@ -305,6 +405,51 @@ fn cmdBuild(allocator: std.mem.Allocator, args: []const [:0]const u8, writer: *I
         break :blk fr.source_path;
     };
 
+    // Get version for cache lookup
+    const build_version = if (fetch_result) |fr| fr.version else version orelse "unknown";
+
+    // Get kernel version for cache comparison
+    const kernel_version = nvfury.builder.getKernelVersion(allocator) catch "unknown";
+    defer if (!std.mem.eql(u8, kernel_version, "unknown")) allocator.free(kernel_version);
+
+    // Check build cache (skip if force rebuild)
+    if (!force_rebuild and !dry_run) {
+        try writer.print("\nChecking build cache...\n", .{});
+
+        var cache_check = nvfury.build_cache.checkCache(allocator, build_version, actual_source, kernel_version) catch null;
+        if (cache_check) |*check| {
+            defer check.deinit(allocator);
+
+            if (!check.needs_rebuild) {
+                // Verify modules still exist
+                if (nvfury.build_cache.hasBuiltModules(allocator, actual_source)) {
+                    try writer.print("Cache HIT: Source unchanged, modules already built.\n", .{});
+                    try writer.print("  Version: {s}\n", .{build_version});
+                    try writer.print("  Kernel:  {s}\n", .{kernel_version});
+                    if (check.cached_meta) |meta| {
+                        try writer.print("  Hash:    {s}...\n", .{meta.source_hash[0..16]});
+                    }
+                    try writer.print("\nSkipping rebuild. Use --force to rebuild anyway.\n", .{});
+                    try writer.print("Run 'sudo nvfury install' to install the cached modules.\n", .{});
+                    return;
+                } else {
+                    try writer.print("Cache valid but modules missing, rebuilding...\n", .{});
+                }
+            } else {
+                const reason_str = switch (check.reason) {
+                    .no_cache => "no cached build exists",
+                    .source_changed => "source files changed",
+                    .kernel_changed => "kernel version changed",
+                    .build_failed => "previous build failed",
+                    .cache_valid => "cache valid",
+                };
+                try writer.print("Rebuild needed: {s}\n", .{reason_str});
+            }
+        } else {
+            try writer.print("No cache entry found, building...\n", .{});
+        }
+    }
+
     if (dry_run) {
         try writer.print("\n[DRY RUN] Would build from: {s}\n", .{actual_source});
         if (patches_arg) |pa| {
@@ -317,8 +462,9 @@ fn cmdBuild(allocator: std.mem.Allocator, args: []const [:0]const u8, writer: *I
     if (patches_arg) |pa| {
         try writer.print("\nApplying patches...\n", .{});
 
-        // Get patches directory (relative to nvfury install or current dir)
-        const patches_dir = "/data/projects/nvfury/patches"; // TODO: make configurable
+        // Get patches directory from settings (configurable)
+        const patches_dir = nvfury.settings.findPatchesDir(allocator) catch "/usr/share/nvfury/patches";
+        defer if (!std.mem.eql(u8, patches_dir, "/usr/share/nvfury/patches")) allocator.free(patches_dir);
 
         if (std.mem.eql(u8, pa, "default")) {
             // Apply all default-enabled patches
@@ -381,12 +527,62 @@ fn cmdBuild(allocator: std.mem.Allocator, args: []const [:0]const u8, writer: *I
         return;
     };
 
+    // Get kernel version for cache (if not already fetched)
+    const cache_kernel_version = if (std.mem.eql(u8, kernel_version, "unknown"))
+        nvfury.builder.getKernelVersion(allocator) catch "unknown"
+    else
+        kernel_version;
+
+    // Compute source hash for caching
+    const source_hash = nvfury.build_cache.computeSourceHash(allocator, actual_source) catch [_]u8{'0'} ** 64;
+
+    // Get current timestamp
+    const ts = std.posix.clock_gettime(.REALTIME) catch std.posix.timespec{ .sec = 0, .nsec = 0 };
+
+    // Determine compiler used
+    const kernel_cc = nvfury.builder.detectKernelCompiler();
+    const use_ccache = nvfury.builder.isCcacheAvailable();
+    const compiler_str = if (use_ccache)
+        (if (std.mem.eql(u8, kernel_cc, "clang")) "ccache clang" else "ccache gcc")
+    else
+        kernel_cc;
+
     if (build_result.success) {
         const duration_s = @as(f64, @floatFromInt(build_result.duration_ns)) / 1_000_000_000.0;
         try writer.print("Build completed in {d:.1}s\n", .{duration_s});
         try writer.print("Output: {s}\n", .{build_result.output_path});
-        try writer.print("\nRun 'sudo nvfury install' to install the built modules.\n", .{});
+
+        // Save build metadata to cache
+        const build_meta = nvfury.build_cache.BuildMeta{
+            .version = build_version,
+            .source_hash = source_hash,
+            .kernel_version = cache_kernel_version,
+            .build_time = ts.sec,
+            .compiler = compiler_str,
+            .cflags = "-march=native -O3",
+            .success = true,
+        };
+
+        nvfury.build_cache.writeBuildMeta(allocator, build_meta) catch |e| {
+            try err_writer.print("Warning: Failed to cache build metadata: {}\n", .{e});
+        };
+
+        try writer.print("\nBuild cached. Future builds with same source will be skipped.\n", .{});
+        try writer.print("Run 'sudo nvfury install' to install the built modules.\n", .{});
     } else {
+        // Cache the failed build so we know to retry
+        const build_meta = nvfury.build_cache.BuildMeta{
+            .version = build_version,
+            .source_hash = source_hash,
+            .kernel_version = cache_kernel_version,
+            .build_time = ts.sec,
+            .compiler = compiler_str,
+            .cflags = "-march=native -O3",
+            .success = false,
+        };
+
+        nvfury.build_cache.writeBuildMeta(allocator, build_meta) catch {};
+
         try err_writer.print("Build failed: {s}\n", .{build_result.error_message orelse "unknown error"});
     }
 }
@@ -710,18 +906,232 @@ fn cmdRecommend(writer: *Io.Writer) !void {
     try nvfury.patch.printRecommendations(writer);
 }
 
-fn cmdCheckUpdate(allocator: std.mem.Allocator, writer: *Io.Writer, err_writer: *Io.Writer) !void {
+fn cmdCheckUpdate(allocator: std.mem.Allocator, args: []const [:0]const u8, writer: *Io.Writer, err_writer: *Io.Writer) !void {
+    var notify = false;
+    var force = false;
+
+    // Parse options
+    for (args) |arg| {
+        if (std.mem.eql(u8, arg, "--notify")) {
+            notify = true;
+        } else if (std.mem.eql(u8, arg, "--force") or std.mem.eql(u8, arg, "-f")) {
+            force = true;
+        }
+    }
+
     try writer.print("nvfury check-update\n", .{});
     try writer.print("---------------------------------------------------\n", .{});
+
+    // Check cached result first (unless forced)
+    if (!force) {
+        if (nvfury.update.readCache(allocator) catch null) |cached| {
+            var c = cached;
+            defer c.deinit(allocator);
+
+            // Get current time
+            const ts = std.posix.clock_gettime(.REALTIME) catch std.posix.timespec{ .sec = 0, .nsec = 0 };
+            const age = ts.sec - c.last_check;
+
+            // If checked recently (within interval), show cached result
+            if (age < nvfury.update.default_check_interval) {
+                var dur_buf: [64]u8 = undefined;
+                const age_str = nvfury.update.formatDuration(age, &dur_buf);
+
+                try writer.print("Last checked: {s}\n\n", .{age_str});
+
+                if (c.update_available) {
+                    try writer.print("Update available!\n", .{});
+                    try writer.print("  Installed: {s}\n", .{c.installed_version});
+                    try writer.print("  Latest:    {s}\n\n", .{c.latest_version});
+                    try writer.print("Run 'nvfury build --latest' to build the new version.\n", .{});
+                } else {
+                    try writer.print("You're up to date!\n", .{});
+                    try writer.print("  Installed: {s}\n", .{c.installed_version});
+                    try writer.print("  Latest:    {s}\n", .{c.latest_version});
+                }
+
+                try writer.print("\nUse --force to check again.\n", .{});
+                return;
+            }
+        }
+    }
+
     try writer.print("Checking for updates from GitHub...\n\n", .{});
 
-    const info = nvfury.fetch.getUpdateInfo(allocator) catch |e| {
-        try err_writer.print("Error checking for updates: {}\n", .{e});
-        return;
-    };
-    defer allocator.free(info);
+    if (notify) {
+        // Use the notification-enabled check
+        var cache = nvfury.update.checkWithNotify(allocator, force) catch |e| {
+            try err_writer.print("Error checking for updates: {}\n", .{e});
+            return;
+        };
+        defer cache.deinit(allocator);
 
-    try writer.print("{s}\n", .{info});
+        if (cache.update_available) {
+            try writer.print("Update available!\n", .{});
+            try writer.print("  Installed: {s}\n", .{cache.installed_version});
+            try writer.print("  Latest:    {s}\n\n", .{cache.latest_version});
+            try writer.print("Run 'nvfury build --latest' to build the new version.\n", .{});
+            try writer.print("\nDesktop notification sent.\n", .{});
+        } else {
+            try writer.print("You're up to date!\n", .{});
+            try writer.print("  Installed: {s}\n", .{cache.installed_version});
+            try writer.print("  Latest:    {s}\n", .{cache.latest_version});
+        }
+    } else {
+        const info = nvfury.fetch.getUpdateInfo(allocator) catch |e| {
+            try err_writer.print("Error checking for updates: {}\n", .{e});
+            return;
+        };
+        defer allocator.free(info);
+
+        // Cache the result
+        _ = nvfury.update.checkAndCache(allocator) catch {};
+
+        try writer.print("{s}\n", .{info});
+    }
+}
+
+fn cmdUpdateDaemon(allocator: std.mem.Allocator, args: []const [:0]const u8, writer: *Io.Writer, err_writer: *Io.Writer) !void {
+    const subcommand = if (args.len > 0) args[0] else "status";
+
+    try writer.print("nvfury update-daemon\n", .{});
+    try writer.print("---------------------------------------------------\n", .{});
+
+    if (std.mem.eql(u8, subcommand, "enable") or std.mem.eql(u8, subcommand, "start")) {
+        try writer.print("Installing systemd timer for automatic update checks...\n\n", .{});
+
+        const success = try nvfury.update.installTimer(allocator, writer);
+
+        if (success) {
+            try writer.print("\nTimer installed and started!\n", .{});
+            try writer.print("nvfury will check for updates every 12 hours.\n", .{});
+            try writer.print("You'll receive desktop notifications when updates are available.\n", .{});
+        } else {
+            try err_writer.print("\nFailed to install timer.\n", .{});
+            try err_writer.print("Make sure systemd --user is available.\n", .{});
+        }
+        return;
+    }
+
+    if (std.mem.eql(u8, subcommand, "disable") or std.mem.eql(u8, subcommand, "stop")) {
+        try writer.print("Removing systemd timer...\n\n", .{});
+
+        const success = try nvfury.update.removeTimer(allocator, writer);
+
+        if (success) {
+            try writer.print("\nTimer removed.\n", .{});
+            try writer.print("Automatic update checking is now disabled.\n", .{});
+        } else {
+            try err_writer.print("\nFailed to remove timer.\n", .{});
+        }
+        return;
+    }
+
+    if (std.mem.eql(u8, subcommand, "status")) {
+        var status = try nvfury.update.getTimerStatus(allocator);
+        defer status.deinit(allocator);
+
+        try writer.print("Timer Status\n\n", .{});
+        try writer.print("  Enabled: {}\n", .{status.enabled});
+        try writer.print("  Active:  {}\n", .{status.active});
+
+        if (status.next_run) |next| {
+            try writer.print("  Next:    {s}\n", .{next});
+        }
+
+        // Show last check info
+        if (nvfury.update.readCache(allocator) catch null) |cached| {
+            var c = cached;
+            defer c.deinit(allocator);
+
+            const ts = std.posix.clock_gettime(.REALTIME) catch std.posix.timespec{ .sec = 0, .nsec = 0 };
+            const age = ts.sec - c.last_check;
+
+            var dur_buf: [64]u8 = undefined;
+            const age_str = nvfury.update.formatDuration(age, &dur_buf);
+
+            try writer.print("\nLast Check\n\n", .{});
+            try writer.print("  Checked:   {s}\n", .{age_str});
+            try writer.print("  Installed: {s}\n", .{c.installed_version});
+            try writer.print("  Latest:    {s}\n", .{c.latest_version});
+            try writer.print("  Update:    {}\n", .{c.update_available});
+        } else {
+            try writer.print("\nNo update check has been performed yet.\n", .{});
+            try writer.print("Run 'nvfury check-update' to check now.\n", .{});
+        }
+
+        if (!status.enabled) {
+            try writer.print("\nTo enable automatic checking:\n", .{});
+            try writer.print("  nvfury update-daemon enable\n", .{});
+        }
+        return;
+    }
+
+    try err_writer.print("Unknown subcommand: {s}\n", .{subcommand});
+    try err_writer.print("Available: enable, disable, status\n", .{});
+}
+
+fn cmdBuildCache(allocator: std.mem.Allocator, args: []const [:0]const u8, writer: *Io.Writer, err_writer: *Io.Writer) !void {
+    const subcommand = if (args.len > 0) args[0] else "status";
+
+    try writer.print("nvfury build-cache\n", .{});
+    try writer.print("---------------------------------------------------\n", .{});
+
+    if (std.mem.eql(u8, subcommand, "status")) {
+        try writer.print("Build Cache Status (source hash tracking)\n\n", .{});
+
+        var status = nvfury.build_cache.getCacheStatus(allocator) catch {
+            try writer.print("No cached builds found.\n", .{});
+            try writer.print("\nBuild cache tracks source hashes to skip redundant rebuilds.\n", .{});
+            try writer.print("Run 'nvfury build' to create a cached build.\n", .{});
+            return;
+        };
+        defer status.deinit(allocator);
+
+        if (status.entries == 0) {
+            try writer.print("No cached builds found.\n", .{});
+            try writer.print("\nBuild cache tracks source hashes to skip redundant rebuilds.\n", .{});
+            try writer.print("Run 'nvfury build' to create a cached build.\n", .{});
+            return;
+        }
+
+        try writer.print("Cached builds: {d}\n\n", .{status.entries});
+
+        for (status.versions.items) |version| {
+            if (nvfury.build_cache.readBuildMeta(allocator, version) catch null) |meta_opt| {
+                var meta = meta_opt;
+                defer meta.deinit(allocator);
+
+                try writer.print("  {s}\n", .{version});
+                try writer.print("    Kernel:   {s}\n", .{meta.kernel_version});
+                try writer.print("    Compiler: {s}\n", .{meta.compiler});
+                try writer.print("    Hash:     {s}...\n", .{meta.source_hash[0..16]});
+                try writer.print("    Success:  {}\n\n", .{meta.success});
+            } else {
+                try writer.print("  {s} (metadata unavailable)\n", .{version});
+            }
+        }
+
+        try writer.print("Build cache will skip rebuilds when source is unchanged.\n", .{});
+        try writer.print("Use 'nvfury build --force' to rebuild anyway.\n", .{});
+        return;
+    }
+
+    if (std.mem.eql(u8, subcommand, "clear")) {
+        try writer.print("Clearing build cache...\n", .{});
+
+        nvfury.build_cache.clearCache(allocator) catch |e| {
+            try err_writer.print("Error clearing cache: {}\n", .{e});
+            return;
+        };
+
+        try writer.print("Build cache cleared.\n", .{});
+        try writer.print("Next build will perform a full rebuild.\n", .{});
+        return;
+    }
+
+    try err_writer.print("Unknown subcommand: {s}\n", .{subcommand});
+    try err_writer.print("Available: status, clear\n", .{});
 }
 
 fn cmdCache(allocator: std.mem.Allocator, args: []const [:0]const u8, writer: *Io.Writer, err_writer: *Io.Writer) !void {
@@ -980,6 +1390,340 @@ fn cmdGpus(writer: *Io.Writer, err_writer: *Io.Writer) !void {
     if (info.nvidia_count == 0) {
         try writer.print("No NVIDIA GPUs detected.\n", .{});
         try writer.print("Ensure NVIDIA drivers are installed and GPU is recognized.\n", .{});
+    }
+}
+
+fn cmdPrime(allocator: std.mem.Allocator, args: []const [:0]const u8, writer: *Io.Writer, err_writer: *Io.Writer) !void {
+    const subcommand = if (args.len > 0) args[0] else "status";
+
+    if (std.mem.eql(u8, subcommand, "status")) {
+        try nvfury.prime.printStatus(allocator, writer);
+        return;
+    }
+
+    if (std.mem.eql(u8, subcommand, "offload")) {
+        if (args.len < 2) {
+            try err_writer.print("Usage: nvfury prime offload <command> [args...]\n", .{});
+            try err_writer.print("Example: nvfury prime offload ./my_game\n", .{});
+            return;
+        }
+
+        // Print environment and hint
+        try writer.print("Running on NVIDIA GPU with PRIME offload...\n\n", .{});
+        try writer.print("Environment:\n", .{});
+        try writer.print("  __NV_PRIME_RENDER_OFFLOAD=1\n", .{});
+        try writer.print("  __GLX_VENDOR_LIBRARY_NAME=nvidia\n\n", .{});
+
+        // Execute the command with PRIME environment using shell wrapper
+        // Build the command string with environment variables
+        var cmd_buf: [4096]u8 = undefined;
+        var cmd_len: usize = 0;
+
+        // Start with environment exports
+        const env_prefix = "export __NV_PRIME_RENDER_OFFLOAD=1 __GLX_VENDOR_LIBRARY_NAME=nvidia __VK_LAYER_NV_optimus=NVIDIA_only && exec ";
+        @memcpy(cmd_buf[0..env_prefix.len], env_prefix);
+        cmd_len = env_prefix.len;
+
+        // Append the user's command arguments
+        for (args[1..]) |arg| {
+            if (cmd_len + arg.len + 3 >= cmd_buf.len) {
+                try err_writer.print("Command too long\n", .{});
+                return;
+            }
+            // Quote each argument for safety
+            cmd_buf[cmd_len] = '\'';
+            cmd_len += 1;
+            @memcpy(cmd_buf[cmd_len .. cmd_len + arg.len], arg);
+            cmd_len += arg.len;
+            cmd_buf[cmd_len] = '\'';
+            cmd_len += 1;
+            cmd_buf[cmd_len] = ' ';
+            cmd_len += 1;
+        }
+
+        const shell_cmd = cmd_buf[0..cmd_len];
+        const shell_cmd_z = allocator.dupeZ(u8, shell_cmd) catch {
+            try err_writer.print("Memory allocation failed\n", .{});
+            return;
+        };
+        defer allocator.free(shell_cmd_z);
+
+        const shell_argv = [_][]const u8{ "/bin/sh", "-c", shell_cmd_z };
+
+        const debug_io = std.Options.debug_io;
+        var child = std.process.spawn(debug_io, .{
+            .argv = &shell_argv,
+            .stdin = .inherit,
+            .stdout = .inherit,
+            .stderr = .inherit,
+        }) catch {
+            try err_writer.print("Failed to execute command\n", .{});
+            return;
+        };
+
+        _ = child.wait(debug_io) catch {};
+        return;
+    }
+
+    if (std.mem.eql(u8, subcommand, "setup")) {
+        try writer.print("nvfury prime setup\n", .{});
+        try writer.print("---------------------------------------------------\n", .{});
+        try writer.print("Configuring PRIME hybrid graphics...\n\n", .{});
+
+        const success = try nvfury.prime.writeConfigs(allocator, writer);
+        if (success) {
+            try writer.print("\nPRIME configuration complete!\n", .{});
+            try writer.print("Log out and back in (or reboot) to apply changes.\n", .{});
+        }
+        return;
+    }
+
+    try err_writer.print("Unknown prime subcommand: {s}\n", .{subcommand});
+    try err_writer.print("Available: status, offload, setup\n", .{});
+}
+
+fn cmdSign(allocator: std.mem.Allocator, args: []const [:0]const u8, writer: *Io.Writer, err_writer: *Io.Writer) !void {
+    const subcommand = if (args.len > 0) args[0] else "status";
+
+    if (std.mem.eql(u8, subcommand, "status")) {
+        try nvfury.sign.printStatus(allocator, writer);
+        return;
+    }
+
+    if (std.mem.eql(u8, subcommand, "setup")) {
+        try writer.print("nvfury sign setup\n", .{});
+        try writer.print("---------------------------------------------------\n", .{});
+
+        const success = try nvfury.sign.generateKeys(allocator, writer);
+        if (success) {
+            try writer.print("\nNext step: Run 'sudo nvfury sign enroll' to enroll the MOK.\n", .{});
+        }
+        return;
+    }
+
+    if (std.mem.eql(u8, subcommand, "enroll")) {
+        try writer.print("nvfury sign enroll\n", .{});
+        try writer.print("---------------------------------------------------\n", .{});
+
+        _ = try nvfury.sign.enrollMok(allocator, writer);
+        return;
+    }
+
+    if (std.mem.eql(u8, subcommand, "sign")) {
+        if (args.len < 2) {
+            try err_writer.print("Usage: nvfury sign sign <module_path>\n", .{});
+            try err_writer.print("Example: nvfury sign sign ./nvidia.ko\n", .{});
+            return;
+        }
+        const module_path = args[1];
+
+        try writer.print("Signing module: {s}\n", .{module_path});
+
+        if (nvfury.sign.signModule(allocator, module_path)) |_| {
+            try writer.print("Module signed successfully.\n", .{});
+        } else |err| {
+            try err_writer.print("Signing failed: {s}\n", .{@errorName(err)});
+        }
+        return;
+    }
+
+    try err_writer.print("Unknown sign subcommand: {s}\n", .{subcommand});
+    try err_writer.print("Available: status, setup, enroll, sign\n", .{});
+}
+
+fn cmdBenchmark(allocator: std.mem.Allocator, args: []const [:0]const u8, writer: *Io.Writer, err_writer: *Io.Writer) !void {
+    const subcommand = if (args.len > 0) args[0] else "run";
+
+    if (std.mem.eql(u8, subcommand, "run")) {
+        try writer.print("nvfury benchmark\n", .{});
+        try writer.print("---------------------------------------------------\n", .{});
+
+        var report = try nvfury.benchmark.runBenchmarks(allocator, writer);
+        defer report.deinit(allocator);
+
+        // Offer to export
+        try writer.print("\nTo export results: nvfury benchmark export <file.json>\n", .{});
+        return;
+    }
+
+    if (std.mem.eql(u8, subcommand, "export")) {
+        if (args.len < 2) {
+            try err_writer.print("Usage: nvfury benchmark export <output.json>\n", .{});
+            return;
+        }
+        const output_path = args[1];
+
+        try writer.print("Running benchmark and exporting to {s}...\n\n", .{output_path});
+
+        var report = try nvfury.benchmark.runBenchmarks(allocator, writer);
+        defer report.deinit(allocator);
+
+        try nvfury.benchmark.exportReport(allocator, report, output_path);
+        try writer.print("\nResults exported to: {s}\n", .{output_path});
+        return;
+    }
+
+    try err_writer.print("Unknown benchmark subcommand: {s}\n", .{subcommand});
+    try err_writer.print("Available: run, export\n", .{});
+}
+
+fn cmdConfig(allocator: std.mem.Allocator, args: []const [:0]const u8, writer: *Io.Writer, err_writer: *Io.Writer) !void {
+    const subcommand = if (args.len > 0) args[0] else "show";
+
+    if (std.mem.eql(u8, subcommand, "show")) {
+        try nvfury.settings.printSettings(allocator, writer);
+        return;
+    }
+
+    if (std.mem.eql(u8, subcommand, "set")) {
+        if (args.len < 3) {
+            try err_writer.print("Usage: nvfury config set <key> <value>\n", .{});
+            try err_writer.print("Example: nvfury config set patches_dir /path/to/patches\n", .{});
+            try err_writer.print("Example: nvfury config set pinned_version 590.48.01\n", .{});
+            return;
+        }
+        const key = args[1];
+        const value = args[2];
+
+        _ = try nvfury.settings.setValue(allocator, key, value, writer);
+        return;
+    }
+
+    if (std.mem.eql(u8, subcommand, "reset")) {
+        try nvfury.settings.resetSettings(allocator, writer);
+        return;
+    }
+
+    if (std.mem.eql(u8, subcommand, "path")) {
+        const expanded = try nvfury.config.expandPath(allocator, nvfury.settings.config_path);
+        defer allocator.free(expanded);
+        try writer.print("Config file: {s}\n", .{expanded});
+        return;
+    }
+
+    try err_writer.print("Unknown config subcommand: {s}\n", .{subcommand});
+    try err_writer.print("Available: show, set, reset, path\n", .{});
+}
+
+fn cmdPreflight(allocator: std.mem.Allocator, writer: *Io.Writer, err_writer: *Io.Writer) !void {
+    _ = err_writer;
+
+    try writer.print("nvfury preflight\n", .{});
+    try writer.print("---------------------------------------------------\n", .{});
+
+    var report = try nvfury.preflight.runChecks(allocator);
+    defer report.deinit(allocator);
+
+    try nvfury.preflight.printReport(report, writer);
+}
+
+fn cmdUninstall(allocator: std.mem.Allocator, args: []const [:0]const u8, writer: *Io.Writer, err_writer: *Io.Writer) !void {
+    // Parse arguments
+    var options = nvfury.uninstall.UninstallOptions{};
+
+    var i: usize = 0;
+    while (i < args.len) : (i += 1) {
+        const arg = args[i];
+
+        if (std.mem.eql(u8, arg, "status")) {
+            try nvfury.uninstall.printStatus(allocator, writer);
+            return;
+        } else if (std.mem.eql(u8, arg, "--dry-run") or std.mem.eql(u8, arg, "-n")) {
+            options.dry_run = true;
+        } else if (std.mem.eql(u8, arg, "--all")) {
+            options.remove_cache = true;
+            options.remove_config = true;
+        } else if (std.mem.eql(u8, arg, "--keep-dkms")) {
+            options.remove_dkms = false;
+        } else if (std.mem.eql(u8, arg, "--keep-config")) {
+            options.remove_modprobe = false;
+        } else if (std.mem.eql(u8, arg, "--remove-cache")) {
+            options.remove_cache = true;
+        } else if (std.mem.eql(u8, arg, "--remove-config")) {
+            options.remove_config = true;
+        } else if (std.mem.eql(u8, arg, "--restore")) {
+            options.restore_backup = true;
+        } else if (std.mem.eql(u8, arg, "--backup")) {
+            i += 1;
+            if (i < args.len) {
+                options.backup_path = args[i];
+                options.restore_backup = true;
+            }
+        } else if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) {
+            try writer.print(
+                \\nvfury uninstall - Remove nvfury-installed NVIDIA drivers
+                \\
+                \\Usage: nvfury uninstall [options]
+                \\       nvfury uninstall status
+                \\
+                \\Options:
+                \\  status            Show what would be removed
+                \\  --dry-run, -n     Show what would be done without doing it
+                \\  --all             Also remove cache and config directories
+                \\  --keep-dkms       Don't remove DKMS entries
+                \\  --keep-config     Don't remove modprobe configuration
+                \\  --remove-cache    Remove ~/.cache/nvfury
+                \\  --remove-config   Remove ~/.config/nvfury
+                \\  --restore         Restore modules from backup after removal
+                \\  --backup <path>   Specify backup path to restore from
+                \\
+                \\Examples:
+                \\  nvfury uninstall status       # See what's installed
+                \\  nvfury uninstall --dry-run    # Preview uninstall
+                \\  sudo nvfury uninstall         # Remove drivers
+                \\  sudo nvfury uninstall --all   # Remove everything
+                \\  sudo nvfury uninstall --restore  # Remove and restore backup
+                \\
+            , .{});
+            return;
+        }
+    }
+
+    if (options.dry_run) {
+        try writer.print("nvfury uninstall (dry run)\n", .{});
+    } else {
+        try writer.print("nvfury uninstall\n", .{});
+    }
+    try writer.print("---------------------------------------------------\n\n", .{});
+
+    const result = try nvfury.uninstall.uninstall(allocator, options);
+
+    // Report results
+    if (options.dry_run) {
+        try writer.print("Would perform the following actions:\n\n", .{});
+    }
+
+    if (result.modules_removed > 0) {
+        try writer.print("  Modules unloaded: {d}\n", .{result.modules_removed});
+    }
+    if (result.dkms_removed) {
+        try writer.print("  DKMS entries: removed\n", .{});
+    }
+    if (result.modprobe_removed) {
+        try writer.print("  Modprobe config: removed\n", .{});
+    }
+    if (result.cache_removed) {
+        try writer.print("  Cache directory: removed\n", .{});
+    }
+    if (result.config_removed) {
+        try writer.print("  Config directory: removed\n", .{});
+    }
+    if (result.backup_restored) {
+        try writer.print("  Backup: restored\n", .{});
+    }
+
+    // Print error message if any
+    if (result.error_msg) |err| {
+        try err_writer.print("\nError: {s}\n", .{err});
+    }
+
+    if (result.success and !options.dry_run) {
+        try writer.print("\nUninstall complete.\n", .{});
+        if (!result.backup_restored) {
+            try writer.print("Reboot to complete driver removal.\n", .{});
+        }
+    } else if (result.success and options.dry_run) {
+        try writer.print("\nRun without --dry-run to perform these actions.\n", .{});
     }
 }
 

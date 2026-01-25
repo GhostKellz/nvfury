@@ -101,6 +101,44 @@ nvfury install --dkms
 nvfury install --direct
 ```
 
+### Automatic Update Checking
+```bash
+# Check for updates manually
+nvfury check-update
+
+# Enable automatic checking (systemd timer, every 12 hours)
+nvfury update-daemon enable
+
+# Check status of auto-updater
+nvfury update-daemon status
+
+# Disable automatic checking
+nvfury update-daemon disable
+
+# Force check with desktop notification
+nvfury check-update --notify --force
+```
+
+### Build Cache (Skip Redundant Rebuilds)
+```bash
+# View cached builds and source hashes
+nvfury build-cache status
+
+# Build will automatically skip if source unchanged
+nvfury build  # Skips if cached and hash matches
+
+# Force rebuild even if cached
+nvfury build --force
+
+# Clear build cache
+nvfury build-cache clear
+```
+
+The build cache computes SHA256 hashes of key source files and skips rebuilds when:
+- Same driver version
+- Same kernel version
+- Source files unchanged (hash match)
+
 ## Optimizations Applied
 
 ### Compiler Flags
@@ -141,22 +179,23 @@ nvfury automatically enables GSP on compatible drivers.
 ```
 nvfury/
 ├── src/
-│   ├── main.zig           # CLI entry point
-│   ├── fetch.zig          # Git/tarball fetcher
-│   ├── patch.zig          # Patch management
-│   ├── build.zig          # Zig cc build orchestration
-│   ├── install.zig        # Module installation
+│   ├── main.zig           # CLI entry point (989 LOC)
+│   ├── root.zig           # Module exports
+│   ├── fetch.zig          # Git/tarball fetcher + version management
+│   ├── patch.zig          # Patch management (13 built-in patches)
+│   ├── builder.zig        # Build orchestration with ccache
+│   ├── install.zig        # Module installation with backups
 │   ├── tune.zig           # Module parameter management
-│   └── dkms.zig           # DKMS integration
+│   ├── dkms.zig           # DKMS integration
+│   ├── config.zig         # Profile export/import (JSON)
+│   ├── gpu.zig            # Multi-GPU detection
+│   ├── update.zig         # Auto-update checker + systemd timer
+│   └── build_cache.zig    # Source hash tracking for skip-rebuild
 ├── patches/               # Gaming patches
-│   ├── gaming-scheduler.patch
-│   └── memory-optimize.patch
 ├── presets/               # Module parameter presets
-│   ├── gaming.toml
-│   ├── quiet.toml
-│   └── balanced.toml
+├── docs/                  # Documentation
 ├── build.zig              # Zig build system
-└── build.zig.zon          # Dependencies
+└── PKGBUILD               # Arch Linux package
 ```
 
 ## Requirements

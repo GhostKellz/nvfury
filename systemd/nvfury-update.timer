@@ -1,0 +1,12 @@
+[Unit]
+Description=Check for NVIDIA driver updates twice daily
+Documentation=man:nvfury(1)
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=12h
+Persistent=true
+RandomizedDelaySec=30min
+
+[Install]
+WantedBy=timers.target

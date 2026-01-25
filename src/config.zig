@@ -92,7 +92,7 @@ pub const ModuleParams = struct {
         }
 
         // Format DynamicPowerManagement
-        var dpm_buf: [32]u8 = undefined;
+        var dpm_buf: [64]u8 = undefined;
         const dpm_str = std.fmt.bufPrint(&dpm_buf, "NVreg_DynamicPowerManagement=0x{x:0>2} ", .{self.dynamic_power_management}) catch unreachable;
         try buf.appendSlice(allocator, dpm_str);
 

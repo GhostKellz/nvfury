@@ -38,11 +38,12 @@ pub fn build(b: *std.Build) void {
         run_cmd.addArgs(args);
     }
 
-    // Test step
+    // Test step - module tests
     const mod_tests = b.addTest(.{
         .root_module = mod,
     });
 
+    // Test step - main executable tests
     const exe_tests = b.addTest(.{
         .root_module = b.createModule(.{
             .root_source_file = b.path("src/main.zig"),
@@ -54,7 +55,21 @@ pub fn build(b: *std.Build) void {
         }),
     });
 
+    // Test step - comprehensive test suite with leak detection
+    const comprehensive_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/tests.zig"),
+            .target = target,
+            .optimize = optimize,
+            .link_libc = true,
+            .imports = &.{
+                .{ .name = "nvfury", .module = mod },
+            },
+        }),
+    });
+
     const test_step = b.step("test", "Run all tests");
     test_step.dependOn(&b.addRunArtifact(mod_tests).step);
     test_step.dependOn(&b.addRunArtifact(exe_tests).step);
+    test_step.dependOn(&b.addRunArtifact(comprehensive_tests).step);
 }

@@ -32,7 +32,7 @@ nvfury status
 
 **Example output:**
 ```
-nvfury 0.1.0
+nvfury 0.2.0
 ---------------------------------------------------
 Installed Driver: 590.48.01
 Kernel Version:   6.18.2-1-cachyos-lto
@@ -265,6 +265,303 @@ sudo nvfury rollback
 ```
 
 **Note:** Requires a previous backup created during `nvfury install`.
+
+---
+
+## uninstall
+
+Remove nvfury-installed NVIDIA drivers.
+
+```bash
+nvfury uninstall [options]
+```
+
+### Options
+
+| Option | Description |
+|--------|-------------|
+| `status` | Show what is installed and would be removed |
+| `--dry-run, -n` | Show what would be done without doing it |
+| `--all` | Also remove cache and config directories |
+| `--keep-dkms` | Don't remove DKMS entries |
+| `--keep-config` | Don't remove modprobe configuration |
+| `--remove-cache` | Remove ~/.cache/nvfury |
+| `--remove-config` | Remove ~/.config/nvfury |
+| `--restore` | Restore modules from backup after removal |
+| `--backup <path>` | Specify backup path to restore from |
+
+### Examples
+
+```bash
+# See what's installed
+nvfury uninstall status
+
+# Preview what would be removed
+nvfury uninstall --dry-run
+
+# Remove drivers
+sudo nvfury uninstall
+
+# Remove everything including cache
+sudo nvfury uninstall --all
+
+# Remove and restore from backup
+sudo nvfury uninstall --restore
+```
+
+---
+
+## check-update
+
+Check for available driver updates.
+
+```bash
+nvfury check-update [options]
+```
+
+### Options
+
+| Option | Description |
+|--------|-------------|
+| `--notify` | Send desktop notification if update available |
+| `--force, -f` | Force recheck even if recently checked |
+
+---
+
+## update-daemon
+
+Manage automatic update checking via systemd timer.
+
+```bash
+nvfury update-daemon <subcommand>
+```
+
+### Subcommands
+
+| Subcommand | Description |
+|------------|-------------|
+| `enable` | Install systemd timer (checks every 12 hours) |
+| `disable` | Remove systemd timer |
+| `status` | Show timer status and last check |
+
+---
+
+## prime
+
+Manage hybrid graphics for laptops with NVIDIA + Intel/AMD iGPU.
+
+```bash
+nvfury prime <subcommand>
+```
+
+### Subcommands
+
+| Subcommand | Description |
+|------------|-------------|
+| `status` | Show current graphics mode |
+| `offload <command>` | Run application on NVIDIA GPU |
+| `setup` | Configure PRIME with X11/modprobe/udev files |
+
+### Examples
+
+```bash
+# Check current mode
+nvfury prime status
+
+# Run game on NVIDIA GPU
+nvfury prime offload ./game
+
+# Configure system for PRIME
+sudo nvfury prime setup
+```
+
+---
+
+## sign
+
+Manage MOK signing keys for SecureBoot.
+
+```bash
+nvfury sign <subcommand>
+```
+
+### Subcommands
+
+| Subcommand | Description |
+|------------|-------------|
+| `status` | Show signing key status |
+| `setup` | Generate MOK signing key pair |
+| `enroll` | Enroll MOK certificate (requires reboot) |
+| `sign <path>` | Sign a kernel module |
+
+### Examples
+
+```bash
+# Check SecureBoot and key status
+nvfury sign status
+
+# Generate signing keys
+sudo nvfury sign setup
+
+# Enroll with MOK (reboot required after)
+sudo nvfury sign enroll
+
+# Sign a module
+sudo nvfury sign sign /path/to/nvidia.ko
+```
+
+---
+
+## benchmark
+
+Performance benchmarking.
+
+```bash
+nvfury benchmark <subcommand>
+```
+
+### Subcommands
+
+| Subcommand | Description |
+|------------|-------------|
+| `run` | Run performance benchmark suite |
+| `compare <file>` | Compare with a previous benchmark |
+| `export <file>` | Export results to JSON |
+
+---
+
+## config
+
+Manage nvfury configuration.
+
+```bash
+nvfury config <subcommand>
+```
+
+### Subcommands
+
+| Subcommand | Description |
+|------------|-------------|
+| `show` | Show current configuration |
+| `set <key> <value>` | Set a configuration value |
+| `reset` | Reset to defaults |
+| `path` | Show config file path |
+
+### Configuration Keys
+
+| Key | Description |
+|-----|-------------|
+| `pinned_version` | Pin to specific driver version |
+| `auto_update_check` | Enable automatic update checking |
+| `notifications` | Enable desktop notifications |
+| `sign_modules` | Sign modules for SecureBoot |
+| `use_dkms` | Use DKMS by default |
+| `default_preset` | Default tuning preset |
+
+### Examples
+
+```bash
+# Show current config
+nvfury config show
+
+# Pin to specific version
+nvfury config set pinned_version 590.48.01
+
+# Disable auto-update checks
+nvfury config set auto_update_check false
+```
+
+---
+
+## preflight
+
+Run pre-build compatibility checks.
+
+```bash
+nvfury preflight
+```
+
+Checks:
+- Kernel headers availability
+- Compiler (gcc/clang) availability
+- make, git availability
+- Disk space
+- NVIDIA GPU detection
+- SecureBoot status
+- Driver compatibility
+
+---
+
+## profile
+
+Export/import tuning profiles in JSON format.
+
+```bash
+nvfury profile <subcommand>
+```
+
+### Subcommands
+
+| Subcommand | Description |
+|------------|-------------|
+| `list` | List available presets |
+| `show <preset>` | Show preset parameters |
+| `export <preset> <file>` | Export preset to JSON file |
+| `import <file> [--apply]` | Import profile from JSON |
+
+---
+
+## gpus
+
+Detect and list all GPUs with architecture info.
+
+```bash
+nvfury gpus
+```
+
+---
+
+## recommend
+
+Show recommended patches for detected GPU.
+
+```bash
+nvfury recommend
+```
+
+---
+
+## cache
+
+Manage ccache for compilation.
+
+```bash
+nvfury cache <subcommand>
+```
+
+### Subcommands
+
+| Subcommand | Description |
+|------------|-------------|
+| `status` | Show ccache statistics |
+| `clear` | Clear ccache |
+
+---
+
+## build-cache
+
+Manage source hash cache for skip-rebuild optimization.
+
+```bash
+nvfury build-cache <subcommand>
+```
+
+### Subcommands
+
+| Subcommand | Description |
+|------------|-------------|
+| `status` | Show cached builds and source hashes |
+| `clear` | Clear build cache |
 
 ---
 

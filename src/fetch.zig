@@ -75,14 +75,52 @@ pub fn fetchSource(allocator: std.mem.Allocator, options: FetchOptions) !FetchRe
 
 /// Get the latest release version from GitHub
 pub fn getLatestVersion(allocator: std.mem.Allocator) ![]u8 {
-    // Try to fetch from GitHub API using curl (simpler than HTTP client for now)
+    // Try to fetch from GitHub API
     if (fetchLatestVersionViaCurl(allocator)) |version| {
         return version;
-    } else |err| {
-        // Log the error but fall back to known good version
-        std.log.warn("Failed to fetch latest version from GitHub: {}", .{err});
-        return allocator.dupe(u8, "590.48.01");
+    } else |_| {
+        // GitHub failed - try to detect installed version as fallback
+        if (getInstalledVersion(allocator)) |installed| {
+            return installed;
+        } else |_| {
+            return error.VersionDetectionFailed;
+        }
     }
+}
+
+/// Detect currently installed NVIDIA driver version
+pub fn getInstalledVersion(allocator: std.mem.Allocator) ![]u8 {
+    const io = std.Options.debug_io;
+
+    // Try /sys/module/nvidia/version first (most reliable)
+    const cat_result = std.process.run(allocator, io, .{
+        .argv = &.{ "cat", "/sys/module/nvidia/version" },
+    }) catch return error.NoDriverInstalled;
+    defer allocator.free(cat_result.stdout);
+    defer allocator.free(cat_result.stderr);
+
+    if (cat_result.term == .exited and cat_result.term.exited == 0 and cat_result.stdout.len > 0) {
+        const version = std.mem.trim(u8, cat_result.stdout, " \n\t\r");
+        if (isValidDriverVersion(version)) {
+            return allocator.dupe(u8, version);
+        }
+    }
+
+    // Try nvidia-smi as backup
+    const smi_result = std.process.run(allocator, io, .{
+        .argv = &.{ "nvidia-smi", "--query-gpu=driver_version", "--format=csv,noheader,nounits" },
+    }) catch return error.NoDriverInstalled;
+    defer allocator.free(smi_result.stdout);
+    defer allocator.free(smi_result.stderr);
+
+    if (smi_result.term == .exited and smi_result.term.exited == 0 and smi_result.stdout.len > 0) {
+        const version = std.mem.trim(u8, smi_result.stdout, " \n\t\r");
+        if (isValidDriverVersion(version)) {
+            return allocator.dupe(u8, version);
+        }
+    }
+
+    return error.NoDriverInstalled;
 }
 
 /// Fetch the latest release version using curl command
@@ -95,7 +133,7 @@ fn fetchLatestVersionViaCurl(allocator: std.mem.Allocator) ![]u8 {
             "-H",
             "Accept: application/vnd.github+json",
             "-H",
-            "User-Agent: nvfury/0.1.0",
+            "User-Agent: nvfury/0.2.0",
             NVIDIA_RELEASES_API ++ "/latest",
         },
     }) catch return error.CurlFailed;
@@ -173,23 +211,17 @@ pub fn getAvailableVersions(allocator: std.mem.Allocator) !VersionList {
         versions.deinit(allocator);
     }
 
-    // Try to fetch from GitHub API using curl
+    // Try to fetch from GitHub API
     if (fetchVersionsViaCurl(allocator, &versions)) {
         return VersionList{ .allocator = allocator, .items = versions };
-    } else |err| {
-        std.log.warn("Failed to fetch versions from GitHub: {}, using defaults", .{err});
-        // Fall back to known versions
-        const defaults = [_][]const u8{
-            "590.48.01",
-            "585.143.02",
-            "580.105.08",
-            "575.51.02",
-            "570.86.16",
-        };
-        for (defaults) |v| {
-            try versions.append(allocator, try allocator.dupe(u8, v));
+    } else |_| {
+        // GitHub failed - add installed version if available
+        if (getInstalledVersion(allocator)) |installed| {
+            try versions.append(allocator, installed);
+            return VersionList{ .allocator = allocator, .items = versions };
+        } else |_| {
+            return error.VersionDetectionFailed;
         }
-        return VersionList{ .allocator = allocator, .items = versions };
     }
 }
 
@@ -203,7 +235,7 @@ fn fetchVersionsViaCurl(allocator: std.mem.Allocator, versions: *std.ArrayListUn
             "-H",
             "Accept: application/vnd.github+json",
             "-H",
-            "User-Agent: nvfury/0.1.0",
+            "User-Agent: nvfury/0.2.0",
             NVIDIA_RELEASES_API,
         },
     }) catch return error.CurlFailed;

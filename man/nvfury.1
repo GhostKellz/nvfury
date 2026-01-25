@@ -1,0 +1,320 @@
+.TH NVFURY 1 "January 2026" "nvfury 0.2.0" "User Commands"
+.SH NAME
+nvfury \- NVIDIA Open Kernel Module Forge
+.SH SYNOPSIS
+.B nvfury
+.I command
+.RI [ options ]
+.SH DESCRIPTION
+.B nvfury
+is a performance-tuned NVIDIA open driver builder for Linux gaming.
+It fetches, patches, and compiles NVIDIA open-gpu-kernel-modules with
+gaming-optimized settings, compiler flags, and module parameters.
+.SH COMMANDS
+.SS Build Commands
+.TP
+.B build
+Fetch and build optimized NVIDIA kernel modules.
+.RS
+.TP
+.B \-\-version \fIVER\fR
+Build a specific driver version (e.g., 590.48.01)
+.TP
+.B \-\-source \fIPATH\fR
+Build from local source directory instead of fetching
+.TP
+.B \-\-latest
+Fetch and build the latest release
+.TP
+.B \-\-patches \fILIST\fR
+Apply patches (comma-separated names or 'default')
+.TP
+.B \-\-force, \-f
+Force rebuild even if source unchanged
+.TP
+.B \-\-dry\-run
+Show what would be done without building
+.RE
+.TP
+.B install
+Install built modules to the system.
+.RS
+.TP
+.B \-\-dkms
+Install via DKMS (automatic rebuild on kernel update)
+.TP
+.B \-\-direct
+Install directly (manual rebuild needed on kernel update)
+.TP
+.B \-\-no\-backup
+Skip backup of existing modules
+.TP
+.B \-\-sign
+Sign modules for SecureBoot
+.RE
+.TP
+.B rollback
+Restore previous driver from backup.
+.RS
+.TP
+.B \-\-backup \fIPATH\fR
+Specify backup path to restore from
+.RE
+.TP
+.B uninstall
+Remove nvfury-installed NVIDIA drivers.
+.RS
+.TP
+.B status
+Show what is installed and would be removed
+.TP
+.B \-\-dry\-run, \-n
+Show what would be done without doing it
+.TP
+.B \-\-all
+Also remove cache and config directories
+.TP
+.B \-\-keep\-dkms
+Don't remove DKMS entries
+.TP
+.B \-\-keep\-config
+Don't remove modprobe configuration
+.TP
+.B \-\-restore
+Restore modules from backup after removal
+.TP
+.B \-\-backup \fIPATH\fR
+Specify backup path to restore from
+.RE
+.SS Tuning Commands
+.TP
+.B tune \fIPRESET\fR
+Apply module parameter preset. Available presets:
+.RS
+.TP
+.B gaming
+Low latency, maximum performance (recommended for gaming)
+.TP
+.B balanced
+Balance of performance and efficiency
+.TP
+.B quiet
+Power saving, reduced heat/noise
+.TP
+.B benchmark
+Maximum performance for testing
+.TP
+.B status
+Show current tuning status
+.RE
+.TP
+.B profile \fISUBCMD\fR
+Export/import tuning profiles in JSON format.
+.RS
+.TP
+.B list
+List available presets
+.TP
+.B show \fIPRESET\fR
+Show preset parameters
+.TP
+.B export \fIPRESET\fR \fIFILE\fR
+Export preset to JSON file
+.TP
+.B import \fIFILE\fR [\-\-apply]
+Import profile from JSON (optionally apply)
+.RE
+.SS Update Commands
+.TP
+.B check\-update
+Check for available driver updates.
+.RS
+.TP
+.B \-\-notify
+Send desktop notification if update available
+.TP
+.B \-\-force, \-f
+Force recheck even if recently checked
+.RE
+.TP
+.B update\-daemon \fISUBCMD\fR
+Manage automatic update checking.
+.RS
+.TP
+.B enable
+Install systemd timer for automatic checking (every 12 hours)
+.TP
+.B disable
+Remove systemd timer
+.TP
+.B status
+Show timer status and last check
+.RE
+.SS Hybrid Graphics (PRIME)
+.TP
+.B prime \fISUBCMD\fR
+Manage hybrid graphics for laptops with NVIDIA + Intel/AMD iGPU.
+.RS
+.TP
+.B status
+Show current graphics mode
+.TP
+.B offload \fICOMMAND\fR
+Run application on NVIDIA GPU
+.TP
+.B setup
+Configure PRIME with X11/modprobe/udev files
+.RE
+.SS SecureBoot Signing
+.TP
+.B sign \fISUBCMD\fR
+Manage MOK signing keys for SecureBoot.
+.RS
+.TP
+.B status
+Show signing key status
+.TP
+.B setup
+Generate MOK signing key pair
+.TP
+.B enroll
+Enroll MOK certificate (requires reboot)
+.TP
+.B sign \fIPATH\fR
+Sign a kernel module
+.RE
+.SS Benchmarking
+.TP
+.B benchmark \fISUBCMD\fR
+Performance benchmarking.
+.RS
+.TP
+.B run
+Run performance benchmark suite
+.TP
+.B compare \fIFILE\fR
+Compare with a previous benchmark
+.TP
+.B export \fIFILE\fR
+Export results to JSON
+.RE
+.SS Configuration
+.TP
+.B config \fISUBCMD\fR
+Manage nvfury configuration.
+.RS
+.TP
+.B show
+Show current configuration
+.TP
+.B set \fIKEY\fR \fIVALUE\fR
+Set a configuration value
+.TP
+.B reset
+Reset to defaults
+.TP
+.B path
+Show config file path
+.RE
+.TP
+.B preflight
+Run pre-build compatibility checks.
+.SS Information Commands
+.TP
+.B status
+Show current driver status, kernel version, and configuration.
+.TP
+.B versions
+List available driver versions from NVIDIA GitHub.
+.TP
+.B gpus
+Detect and list all GPUs (multi-GPU support).
+.TP
+.B recommend
+Show recommended patches for detected GPU.
+.TP
+.B patch list
+List available patches with descriptions.
+.TP
+.B cache status
+Show ccache statistics.
+.TP
+.B build\-cache status
+Show cached builds and source hashes.
+.SS Other
+.TP
+.B version, \-v, \-\-version
+Show version information.
+.TP
+.B help, \-h, \-\-help
+Show help message.
+.SH FILES
+.TP
+.I ~/.config/nvfury/config.json
+User configuration file
+.TP
+.I ~/.cache/nvfury/nvidia\-open/
+Cached NVIDIA source code
+.TP
+.I ~/.cache/nvfury/build\-meta/
+Build cache metadata
+.TP
+.I /etc/modprobe.d/nvfury.conf
+Module parameters configuration
+.TP
+.I /var/lib/nvfury/backup/
+Module backups for rollback
+.TP
+.I /var/lib/nvfury/mok/
+MOK signing keys (SecureBoot)
+.SH EXAMPLES
+.SS Build and install with gaming optimizations
+.nf
+nvfury build
+sudo nvfury install --dkms
+sudo nvfury tune gaming
+sudo reboot
+.fi
+.SS Update to latest driver
+.nf
+nvfury build --latest
+sudo nvfury install --dkms
+.fi
+.SS Run game on NVIDIA GPU (hybrid graphics)
+.nf
+nvfury prime offload ./game
+.fi
+.SS Set up SecureBoot signing
+.nf
+sudo nvfury sign setup
+sudo nvfury sign enroll
+# Reboot and complete MOK enrollment
+sudo nvfury install --sign
+.fi
+.SS Enable automatic update checking
+.nf
+nvfury update-daemon enable
+.fi
+.SS Pin to specific driver version
+.nf
+nvfury config set pinned_version 590.48.01
+.fi
+.SH ENVIRONMENT
+.TP
+.B __NV_PRIME_RENDER_OFFLOAD=1
+Run OpenGL applications on NVIDIA GPU
+.TP
+.B __GLX_VENDOR_LIBRARY_NAME=nvidia
+Force NVIDIA GLX library
+.TP
+.B VK_ICD_FILENAMES=/usr/share/vulkan/icd.d/nvidia_icd.json
+Force NVIDIA Vulkan driver
+.SH SEE ALSO
+.BR nvidia\-smi (1),
+.BR dkms (8),
+.BR modprobe (8),
+.BR mokutil (1)
+.SH AUTHOR
+GhostKellz <https://github.com/GhostKellz/nvfury>
+.SH BUGS
+Report bugs at: https://github.com/GhostKellz/nvfury/issues

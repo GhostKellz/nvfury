@@ -6,9 +6,9 @@
 
 pub const version = struct {
     pub const major = 0;
-    pub const minor = 1;
+    pub const minor = 2;
     pub const patch = 0;
-    pub const string = "0.1.0";
+    pub const string = "0.2.0";
 };
 
 pub const fetch = @import("fetch.zig");
@@ -19,6 +19,14 @@ pub const tune = @import("tune.zig");
 pub const dkms = @import("dkms.zig");
 pub const config = @import("config.zig");
 pub const gpu = @import("gpu.zig");
+pub const update = @import("update.zig");
+pub const build_cache = @import("build_cache.zig");
+pub const prime = @import("prime.zig");
+pub const sign = @import("sign.zig");
+pub const benchmark = @import("benchmark.zig");
+pub const settings = @import("settings.zig");
+pub const preflight = @import("preflight.zig");
+pub const uninstall = @import("uninstall.zig");
 
 /// Default paths for nvfury
 pub const paths = struct {
@@ -36,13 +44,9 @@ pub const paths = struct {
     pub const modprobe = "/etc/modprobe.d/nvfury.conf";
 };
 
-/// Supported NVIDIA driver versions (590+ with GSP support)
-pub const supported_versions = [_][]const u8{
-    "590.48.01", // Current stable with GSP=1
-    "590.36.01",
-    "585.143.02",
-    "580.105.08",
-};
+/// Minimum driver version for nvfury (open kernel modules with full feature support)
+/// 580+ has stable GSP firmware and ReBAR support for gaming
+pub const min_open_driver_version = "580.0.0";
 
 /// GPU architecture support
 pub const Architecture = enum {
@@ -71,5 +75,6 @@ pub const Architecture = enum {
 test "version info" {
     const std = @import("std");
     try std.testing.expect(version.major == 0);
-    try std.testing.expect(version.minor == 1);
+    try std.testing.expect(version.minor == 2);
+    try std.testing.expectEqualStrings("0.2.0", version.string);
 }
