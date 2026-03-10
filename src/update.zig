@@ -83,7 +83,7 @@ pub fn readCache(allocator: std.mem.Allocator) !?UpdateCache {
     defer allocator.free(expanded_path);
 
     const fd = std.posix.openat(std.posix.AT.FDCWD, expanded_path, .{}, 0) catch return null;
-    defer std.posix.close(fd);
+    defer _ = std.c.close(fd);
 
     // Get file size
     const size_i64 = std.c.lseek64(fd, 0, 2); // SEEK_END
@@ -122,7 +122,7 @@ pub fn writeCache(allocator: std.mem.Allocator, cache: UpdateCache) !void {
     defer allocator.free(json);
 
     const fd = try std.posix.openat(std.posix.AT.FDCWD, expanded_path, .{ .ACCMODE = .WRONLY, .CREAT = true, .TRUNC = true }, 0o644);
-    defer std.posix.close(fd);
+    defer _ = std.c.close(fd);
 
     const write_result = std.c.write(fd, json.ptr, json.len);
     if (write_result < 0) return error.WriteError;
@@ -133,7 +133,8 @@ pub fn checkAndCache(allocator: std.mem.Allocator) !UpdateCache {
     const result = try fetch.checkForUpdate(allocator);
 
     // Get current timestamp
-    const ts = std.posix.clock_gettime(.REALTIME) catch std.posix.timespec{ .sec = 0, .nsec = 0 };
+    var ts: std.os.linux.timespec = .{ .sec = 0, .nsec = 0 };
+    _ = std.os.linux.clock_gettime(.REALTIME, &ts);
 
     const cache = UpdateCache{
         .last_check = ts.sec,
@@ -155,7 +156,8 @@ pub fn shouldCheck(allocator: std.mem.Allocator, interval: i64) !bool {
     var c = cached.?;
     defer c.deinit(allocator);
 
-    const ts = std.posix.clock_gettime(.REALTIME) catch return true;
+    var ts: std.os.linux.timespec = undefined;
+    if (std.os.linux.clock_gettime(.REALTIME, &ts) != 0) return true;
     const now = ts.sec;
 
     return (now - c.last_check) >= interval;
@@ -262,7 +264,7 @@ pub fn installTimer(allocator: std.mem.Allocator, writer: *std.Io.Writer) !bool 
 
     const service_fd = std.posix.openat(std.posix.AT.FDCWD, service_path, .{ .ACCMODE = .WRONLY, .CREAT = true, .TRUNC = true }, 0o644) catch return false;
     _ = std.c.write(service_fd, systemd_service.ptr, systemd_service.len);
-    std.posix.close(service_fd);
+    _ = std.c.close(service_fd);
 
     // Write timer file
     const timer_path = try std.fmt.allocPrint(allocator, "{s}/nvfury-update.timer", .{user_systemd_dir});
@@ -270,7 +272,7 @@ pub fn installTimer(allocator: std.mem.Allocator, writer: *std.Io.Writer) !bool 
 
     const timer_fd = std.posix.openat(std.posix.AT.FDCWD, timer_path, .{ .ACCMODE = .WRONLY, .CREAT = true, .TRUNC = true }, 0o644) catch return false;
     _ = std.c.write(timer_fd, systemd_timer.ptr, systemd_timer.len);
-    std.posix.close(timer_fd);
+    _ = std.c.close(timer_fd);
 
     try writer.print("Created: {s}\n", .{service_path});
     try writer.print("Created: {s}\n", .{timer_path});

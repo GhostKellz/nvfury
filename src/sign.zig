@@ -40,11 +40,11 @@ pub const SecureBootStatus = struct {
 pub fn isSecureBootEnabled() bool {
     // Check /sys/firmware/efi/efivars/SecureBoot-*
     const fd = std.posix.openat(std.posix.AT.FDCWD, "/sys/firmware/efi/efivars", .{ .DIRECTORY = true }, 0) catch return false;
-    std.posix.close(fd);
+    _ = std.c.close(fd);
 
     // Try to read SecureBoot variable
     const sb_fd = std.posix.openat(std.posix.AT.FDCWD, "/sys/firmware/efi/efivars/SecureBoot-8be4df61-93ca-11d2-aa0d-00e098032b8c", .{}, 0) catch return false;
-    defer std.posix.close(sb_fd);
+    defer _ = std.c.close(sb_fd);
 
     var buf: [8]u8 = undefined;
     const n = std.posix.read(sb_fd, &buf) catch return false;
@@ -61,7 +61,7 @@ pub fn isSecureBootEnabled() bool {
 /// Check if file exists
 fn fileExists(path: []const u8) bool {
     const fd = std.posix.openat(std.posix.AT.FDCWD, path, .{}, 0) catch return false;
-    std.posix.close(fd);
+    _ = std.c.close(fd);
     return true;
 }
 
@@ -180,7 +180,7 @@ pub fn generateKeys(allocator: std.mem.Allocator, writer: *std.Io.Writer) !bool 
         return false;
     };
     _ = std.c.write(conf_fd, openssl_conf.ptr, openssl_conf.len);
-    std.posix.close(conf_fd);
+    _ = std.c.close(conf_fd);
 
     try writer.print("Generating 4096-bit RSA key pair...\n", .{});
 

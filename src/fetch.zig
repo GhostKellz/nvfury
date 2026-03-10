@@ -48,7 +48,7 @@ pub fn fetchSource(allocator: std.mem.Allocator, options: FetchOptions) !FetchRe
         // Try to open the directory to see if it exists
         const fd = std.posix.openat(std.posix.AT.FDCWD, version_path, .{ .DIRECTORY = true }, 0) catch null;
         if (fd) |f| {
-            std.posix.close(f);
+            _ = std.c.close(f);
             return FetchResult{
                 .source_path = version_path,
                 .version = try allocator.dupe(u8, target_version),
@@ -319,7 +319,7 @@ pub fn isCached(allocator: std.mem.Allocator, version: []const u8, cache_dir: []
 
     // Try to open the directory to check if it exists
     const fd = std.posix.openat(std.posix.AT.FDCWD, version_path, .{ .DIRECTORY = true }, 0) catch return false;
-    std.posix.close(fd);
+    _ = std.c.close(fd);
     return true;
 }
 
@@ -333,7 +333,7 @@ pub fn getInstalledDriverVersion() ?[]const u8 {
     const fd = std.posix.openat(std.posix.AT.FDCWD, "/sys/module/nvidia/version", .{}, 0) catch {
         return null;
     };
-    defer std.posix.close(fd);
+    defer _ = std.c.close(fd);
 
     driver_version_len = 0;
 

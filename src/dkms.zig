@@ -104,7 +104,7 @@ pub fn register(allocator: std.mem.Allocator, options: DkmsOptions) !DkmsResult 
             .message = "Failed to create dkms.conf",
         };
     };
-    defer std.posix.close(fd);
+    defer _ = std.c.close(fd);
     const write_result = std.c.write(fd, conf_content.ptr, conf_content.len);
     if (write_result < 0) {
         return DkmsResult{
@@ -210,7 +210,7 @@ pub fn getStatus(allocator: std.mem.Allocator) ![]u8 {
 pub fn isDkmsAvailable() bool {
     // Try to open the file to check if it exists
     const fd = std.posix.openat(std.posix.AT.FDCWD, "/usr/sbin/dkms", .{}, 0) catch return false;
-    std.posix.close(fd);
+    _ = std.c.close(fd);
     return true;
 }
 

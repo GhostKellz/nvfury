@@ -337,7 +337,8 @@ pub const Profile = struct {
     /// Create profile from preset
     pub fn fromPreset(preset: TunePreset, alloc: std.mem.Allocator) !Profile {
         // Get current time as unix timestamp (seconds since epoch)
-        const ts = std.posix.clock_gettime(.REALTIME) catch std.posix.timespec{ .sec = 0, .nsec = 0 };
+        var ts: std.os.linux.timespec = .{ .sec = 0, .nsec = 0 };
+        _ = std.os.linux.clock_gettime(.REALTIME, &ts);
         const now: i64 = ts.sec;
 
         const name = try alloc.dupe(u8, @tagName(preset));
@@ -429,7 +430,7 @@ pub fn exportProfile(allocator: std.mem.Allocator, profile: Profile, path: []con
     defer allocator.free(expanded_path);
 
     const fd = try std.posix.openat(std.posix.AT.FDCWD, expanded_path, .{ .ACCMODE = .WRONLY, .CREAT = true, .TRUNC = true }, 0o644);
-    defer std.posix.close(fd);
+    defer _ = std.c.close(fd);
 
     const write_result = std.c.write(fd, json.ptr, json.len);
     if (write_result < 0) return error.WriteError;
@@ -441,7 +442,7 @@ pub fn importProfile(allocator: std.mem.Allocator, path: []const u8) !Profile {
     defer allocator.free(expanded_path);
 
     const fd = try std.posix.openat(std.posix.AT.FDCWD, expanded_path, .{}, 0);
-    defer std.posix.close(fd);
+    defer _ = std.c.close(fd);
 
     // Get file size using lseek
     const size_i64 = std.c.lseek64(fd, 0, 2); // SEEK_END = 2

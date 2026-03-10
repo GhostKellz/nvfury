@@ -73,7 +73,7 @@ fn isModuleLoaded(module: []const u8) bool {
     const path = std.fmt.bufPrint(&path_buf, "/sys/module/{s}", .{module}) catch return false;
 
     const fd = std.posix.openat(std.posix.AT.FDCWD, path, .{ .DIRECTORY = true }, 0) catch return false;
-    std.posix.close(fd);
+    _ = std.c.close(fd);
     return true;
 }
 
@@ -81,7 +81,7 @@ fn isModuleLoaded(module: []const u8) bool {
 fn hasIntelGpu() bool {
     // Check for Intel GPU in /sys/class/drm
     const fd = std.posix.openat(std.posix.AT.FDCWD, "/sys/class/drm", .{ .DIRECTORY = true }, 0) catch return false;
-    std.posix.close(fd);
+    _ = std.c.close(fd);
 
     // Check for i915 module
     return isModuleLoaded("i915");
@@ -95,7 +95,7 @@ fn hasAmdIgpu() bool {
     // Try to detect if it's an APU by checking for specific device classes
     // APUs typically have both CPU and GPU on same die
     const fd = std.posix.openat(std.posix.AT.FDCWD, "/sys/class/drm/card0/device/vendor", .{}, 0) catch return false;
-    defer std.posix.close(fd);
+    defer _ = std.c.close(fd);
 
     var buf: [16]u8 = undefined;
     const n = std.posix.read(fd, &buf) catch return false;
@@ -131,7 +131,7 @@ pub fn getStatus(allocator: std.mem.Allocator) !PrimeStatus {
     var runtime_pm = false;
     const pm_fd = std.posix.openat(std.posix.AT.FDCWD, "/sys/bus/pci/devices/0000:01:00.0/power/runtime_status", .{}, 0) catch null;
     if (pm_fd) |fd| {
-        defer std.posix.close(fd);
+        defer _ = std.c.close(fd);
         var buf: [32]u8 = undefined;
         const n = std.posix.read(fd, &buf) catch 0;
         if (n > 0) {
@@ -208,7 +208,7 @@ pub fn createOffloadScript(allocator: std.mem.Allocator, output_path: []const u8
     defer allocator.free(expanded_path);
 
     const fd = try std.posix.openat(std.posix.AT.FDCWD, expanded_path, .{ .ACCMODE = .WRONLY, .CREAT = true, .TRUNC = true }, 0o755);
-    defer std.posix.close(fd);
+    defer _ = std.c.close(fd);
 
     const write_result = std.c.write(fd, script.ptr, script.len);
     if (write_result < 0) return error.WriteError;
@@ -284,7 +284,7 @@ pub fn writeConfigs(allocator: std.mem.Allocator, writer: *std.Io.Writer) !bool 
         return false;
     };
     _ = std.c.write(xorg_fd, xorg_prime_conf.ptr, xorg_prime_conf.len);
-    std.posix.close(xorg_fd);
+    _ = std.c.close(xorg_fd);
     try writer.print("Created: {s}\n", .{xorg_path});
 
     // Write modprobe config
@@ -294,7 +294,7 @@ pub fn writeConfigs(allocator: std.mem.Allocator, writer: *std.Io.Writer) !bool 
         return false;
     };
     _ = std.c.write(modprobe_fd, modprobe_prime_conf.ptr, modprobe_prime_conf.len);
-    std.posix.close(modprobe_fd);
+    _ = std.c.close(modprobe_fd);
     try writer.print("Created: {s}\n", .{modprobe_path});
 
     // Write udev rules
@@ -304,7 +304,7 @@ pub fn writeConfigs(allocator: std.mem.Allocator, writer: *std.Io.Writer) !bool 
         return false;
     };
     _ = std.c.write(udev_fd, udev_prime_rules.ptr, udev_prime_rules.len);
-    std.posix.close(udev_fd);
+    _ = std.c.close(udev_fd);
     try writer.print("Created: {s}\n", .{udev_path});
 
     // Reload udev rules

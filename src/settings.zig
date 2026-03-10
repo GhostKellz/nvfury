@@ -54,7 +54,7 @@ pub const Settings = struct {
                 .owns_strings = false,
             };
         };
-        defer std.posix.close(fd);
+        defer _ = std.c.close(fd);
 
         // Get file size
         const size_i64 = std.c.lseek64(fd, 0, 2);
@@ -155,7 +155,7 @@ pub const Settings = struct {
         defer allocator.free(expanded_path);
 
         const fd = try std.posix.openat(std.posix.AT.FDCWD, expanded_path, .{ .ACCMODE = .WRONLY, .CREAT = true, .TRUNC = true }, 0o644);
-        defer std.posix.close(fd);
+        defer _ = std.c.close(fd);
 
         const write_result = std.c.write(fd, json.ptr, json.len);
         if (write_result < 0) return error.WriteError;
@@ -260,7 +260,7 @@ pub fn findPatchesDir(allocator: std.mem.Allocator) ![]u8 {
     // Try config setting first
     if (settings.getPatchesDir(allocator)) |dir| {
         if (std.posix.openat(std.posix.AT.FDCWD, dir, .{ .DIRECTORY = true }, 0)) |fd| {
-            std.posix.close(fd);
+            _ = std.c.close(fd);
             return dir;
         } else |_| {
             allocator.free(dir);
@@ -273,7 +273,7 @@ pub fn findPatchesDir(allocator: std.mem.Allocator) ![]u8 {
     // Try user directory
     const user_dir = try config.expandPath(allocator, user_patches_dir);
     if (std.posix.openat(std.posix.AT.FDCWD, user_dir, .{ .DIRECTORY = true }, 0)) |fd| {
-        std.posix.close(fd);
+        _ = std.c.close(fd);
         return user_dir;
     } else |_| {
         allocator.free(user_dir);
@@ -289,7 +289,7 @@ fn trySystemPatches(allocator: std.mem.Allocator) ![]u8 {
         // Fall back to empty (no patches)
         return allocator.dupe(u8, "");
     };
-    std.posix.close(fd);
+    _ = std.c.close(fd);
     return allocator.dupe(u8, default_patches_dir);
 }
 

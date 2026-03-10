@@ -302,7 +302,7 @@ fn checkSecureBoot(allocator: std.mem.Allocator) !CheckResult {
             .severity = .info,
         };
     };
-    defer std.posix.close(fd);
+    defer _ = std.c.close(fd);
 
     var buf: [8]u8 = undefined;
     const n = std.posix.read(fd, &buf) catch {

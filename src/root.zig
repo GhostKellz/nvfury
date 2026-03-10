@@ -7,8 +7,8 @@
 pub const version = struct {
     pub const major = 0;
     pub const minor = 2;
-    pub const patch = 0;
-    pub const string = "0.2.0";
+    pub const patch = 2;
+    pub const string = "0.2.2";
 };
 
 pub const fetch = @import("fetch.zig");
@@ -45,8 +45,8 @@ pub const paths = struct {
 };
 
 /// Minimum driver version for nvfury (open kernel modules with full feature support)
-/// 580+ has stable GSP firmware and ReBAR support for gaming
-pub const min_open_driver_version = "580.0.0";
+/// 595+ has stable GSP firmware, ReBAR support, and DX12 compatibility fixes
+pub const min_open_driver_version = "595.0.0";
 
 /// GPU architecture support
 pub const Architecture = enum {
@@ -76,5 +76,5 @@ test "version info" {
     const std = @import("std");
     try std.testing.expect(version.major == 0);
     try std.testing.expect(version.minor == 2);
-    try std.testing.expectEqualStrings("0.2.0", version.string);
+    try std.testing.expectEqualStrings("0.2.2", version.string);
 }

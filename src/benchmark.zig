@@ -7,6 +7,14 @@ const std = @import("std");
 const config = @import("config.zig");
 const fetch = @import("fetch.zig");
 
+/// Get monotonic time in nanoseconds
+fn getMonotonicNs() u64 {
+    var ts: std.os.linux.timespec = undefined;
+    const rc = std.os.linux.clock_gettime(.MONOTONIC, &ts);
+    if (rc != 0) return 0;
+    return @intCast(@as(i128, ts.sec) * 1_000_000_000 + ts.nsec);
+}
+
 /// Benchmark result
 pub const BenchmarkResult = struct {
     /// Test name
@@ -146,13 +154,7 @@ fn benchModuleLoadTime(allocator: std.mem.Allocator) !BenchmarkResult {
         .argv = &.{ "rmmod", "nvidia_uvm" },
     }) catch {};
 
-    var timer = std.time.Timer.start() catch return BenchmarkResult{
-        .name = "module_load_time",
-        .value = 0,
-        .unit = "ms",
-        .higher_is_better = false,
-        .error_msg = "Timer not supported",
-    };
+    const start_time = getMonotonicNs();
 
     _ = std.process.run(allocator, io, .{
         .argv = &.{ "modprobe", "nvidia_uvm" },
@@ -164,7 +166,7 @@ fn benchModuleLoadTime(allocator: std.mem.Allocator) !BenchmarkResult {
         .error_msg = "Failed to reload module",
     };
 
-    const elapsed_ns = timer.read();
+    const elapsed_ns = getMonotonicNs() - start_time;
     const duration_ms = @as(f64, @floatFromInt(elapsed_ns)) / 1_000_000.0;
 
     return BenchmarkResult{
@@ -181,13 +183,7 @@ fn benchNvmlQueryLatency(allocator: std.mem.Allocator) !BenchmarkResult {
     const io = std.Options.debug_io;
     const iterations = 100;
 
-    var timer = std.time.Timer.start() catch return BenchmarkResult{
-        .name = "nvml_query_latency",
-        .value = 0,
-        .unit = "us",
-        .higher_is_better = false,
-        .error_msg = "Timer not supported",
-    };
+    const start_time = getMonotonicNs();
 
     // Use nvidia-smi as NVML proxy
     var i: u32 = 0;
@@ -205,7 +201,7 @@ fn benchNvmlQueryLatency(allocator: std.mem.Allocator) !BenchmarkResult {
         allocator.free(result.stderr);
     }
 
-    const elapsed_ns = timer.read();
+    const elapsed_ns = getMonotonicNs() - start_time;
     const avg_us = @as(f64, @floatFromInt(elapsed_ns)) / @as(f64, @floatFromInt(iterations)) / 1000.0;
 
     return BenchmarkResult{
@@ -324,7 +320,8 @@ pub fn runBenchmarks(allocator: std.mem.Allocator, writer: *std.Io.Writer) !Benc
     }
 
     // Get timestamp
-    const ts = std.posix.clock_gettime(.REALTIME) catch std.posix.timespec{ .sec = 0, .nsec = 0 };
+    var ts: std.os.linux.timespec = .{ .sec = 0, .nsec = 0 };
+    _ = std.os.linux.clock_gettime(.REALTIME, &ts);
 
     // Detect if this is nvfury build or stock
     const build_type = if (fetch.getInstalledDriverVersion() != null) blk: {
@@ -332,7 +329,7 @@ pub fn runBenchmarks(allocator: std.mem.Allocator, writer: *std.Io.Writer) !Benc
         const fd = std.posix.openat(std.posix.AT.FDCWD, "/etc/modprobe.d/nvfury.conf", .{}, 0) catch {
             break :blk "stock";
         };
-        std.posix.close(fd);
+        _ = std.c.close(fd);
         break :blk "nvfury";
     } else "unknown";
 
@@ -458,7 +455,7 @@ pub fn exportReport(allocator: std.mem.Allocator, report: BenchmarkReport, outpu
     defer allocator.free(expanded_path);
 
     const fd = try std.posix.openat(std.posix.AT.FDCWD, expanded_path, .{ .ACCMODE = .WRONLY, .CREAT = true, .TRUNC = true }, 0o644);
-    defer std.posix.close(fd);
+    defer _ = std.c.close(fd);
 
     const write_result = std.c.write(fd, json.ptr, json.len);
     if (write_result < 0) return error.WriteError;

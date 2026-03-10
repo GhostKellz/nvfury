@@ -140,7 +140,7 @@ pub fn computeSourceHash(allocator: std.mem.Allocator, source_dir: []const u8) !
             hasher.update(file);
             continue;
         };
-        defer std.posix.close(fd);
+        defer _ = std.c.close(fd);
 
         // Read file in chunks and hash
         var buf: [8192]u8 = undefined;
@@ -195,7 +195,7 @@ pub fn readBuildMeta(allocator: std.mem.Allocator, version: []const u8) !?BuildM
     defer allocator.free(cache_path);
 
     const fd = std.posix.openat(std.posix.AT.FDCWD, cache_path, .{}, 0) catch return null;
-    defer std.posix.close(fd);
+    defer _ = std.c.close(fd);
 
     // Get file size
     const size_i64 = std.c.lseek64(fd, 0, 2);
@@ -234,7 +234,7 @@ pub fn writeBuildMeta(allocator: std.mem.Allocator, meta: BuildMeta) !void {
     defer allocator.free(json);
 
     const fd = try std.posix.openat(std.posix.AT.FDCWD, cache_path, .{ .ACCMODE = .WRONLY, .CREAT = true, .TRUNC = true }, 0o644);
-    defer std.posix.close(fd);
+    defer _ = std.c.close(fd);
 
     const write_result = std.c.write(fd, json.ptr, json.len);
     if (write_result < 0) return error.WriteError;
@@ -329,7 +329,7 @@ pub fn hasBuiltModules(allocator: std.mem.Allocator, output_dir: []const u8) boo
         defer allocator.free(module_path);
 
         const fd = std.posix.openat(std.posix.AT.FDCWD, module_path, .{}, 0) catch return false;
-        std.posix.close(fd);
+        _ = std.c.close(fd);
     }
 
     return true;

@@ -159,9 +159,17 @@ pub fn clearCcache(allocator: std.mem.Allocator) !void {
     }) catch return error.SystemResources;
 }
 
+/// Get monotonic time in nanoseconds
+fn getMonotonicNs() u64 {
+    var ts: std.os.linux.timespec = undefined;
+    const rc = std.os.linux.clock_gettime(.MONOTONIC, &ts);
+    if (rc != 0) return 0;
+    return @intCast(@as(i128, ts.sec) * 1_000_000_000 + ts.nsec);
+}
+
 /// Build NVIDIA open kernel modules
 pub fn build(allocator: std.mem.Allocator, options: BuildOptions) !BuildResult {
-    var timer = std.time.Timer.start() catch null;
+    const start_time = getMonotonicNs();
 
     // Get kernel version
     const kernel_version = options.kernel_version orelse try getKernelVersion(allocator);
@@ -181,7 +189,7 @@ pub fn build(allocator: std.mem.Allocator, options: BuildOptions) !BuildResult {
             .error_message = "Kernel headers not found. Install linux-headers package.",
         };
     };
-    std.posix.close(kernel_fd);
+    _ = std.c.close(kernel_fd);
 
     // Detect kernel compiler (clang vs gcc) by reading /proc/version
     const kernel_cc = detectKernelCompiler();
@@ -298,7 +306,7 @@ pub fn build(allocator: std.mem.Allocator, options: BuildOptions) !BuildResult {
             .error_message = "Failed waiting for build process",
         };
     };
-    const duration_ns: u64 = if (timer) |*t| t.read() else 0;
+    const duration_ns: u64 = getMonotonicNs() - start_time;
 
     if (term != .exited or term.exited != 0) {
         return BuildResult{
@@ -347,7 +355,7 @@ pub fn hasKernelHeaders(kernel_version: []const u8) bool {
     const path = std.fmt.bufPrint(&buf, "/lib/modules/{s}/build", .{kernel_version}) catch return false;
     // Try to open the directory to check if it exists
     const fd = std.posix.openat(std.posix.AT.FDCWD, path, .{ .DIRECTORY = true }, 0) catch return false;
-    std.posix.close(fd);
+    _ = std.c.close(fd);
     return true;
 }
 
@@ -376,7 +384,7 @@ pub fn getZigVersion(allocator: std.mem.Allocator) ![]u8 {
 /// Reads /proc/version to check for "clang" or "gcc"
 pub fn detectKernelCompiler() []const u8 {
     const fd = std.posix.openat(std.posix.AT.FDCWD, "/proc/version", .{}, 0) catch return "gcc";
-    defer std.posix.close(fd);
+    defer _ = std.c.close(fd);
 
     var buf: [512]u8 = undefined;
     const len = std.posix.read(fd, &buf) catch return "gcc";

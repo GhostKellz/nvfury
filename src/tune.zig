@@ -44,7 +44,7 @@ pub fn applyPreset(allocator: std.mem.Allocator, preset: config.TunePreset) !Tun
             },
         };
     };
-    defer std.posix.close(fd);
+    defer _ = std.c.close(fd);
 
     const write_result = std.c.write(fd, conf_content.ptr, conf_content.len);
     if (write_result < 0) {
@@ -79,7 +79,7 @@ pub fn getCurrentParams() CurrentParams {
     // Try to read nvfury.conf using posix
     const conf_path = "/etc/modprobe.d/nvfury.conf";
     const fd = std.posix.openat(std.posix.AT.FDCWD, conf_path, .{}, 0) catch return params;
-    defer std.posix.close(fd);
+    defer _ = std.c.close(fd);
 
     var buf: [4096]u8 = undefined;
     var total: usize = 0;

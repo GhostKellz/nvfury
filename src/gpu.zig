@@ -232,7 +232,7 @@ pub fn detectGpu() ?GpuInfo {
 /// Read hex value from sysfs file
 fn readSysfsHex(path: []const u8) ?u32 {
     const fd = std.posix.openat(std.posix.AT.FDCWD, path, .{}, 0) catch return null;
-    defer std.posix.close(fd);
+    defer _ = std.c.close(fd);
 
     var buf: [32]u8 = undefined;
     const len = std.posix.read(fd, &buf) catch return null;

@@ -537,7 +537,8 @@ fn cmdBuild(allocator: std.mem.Allocator, args: []const [:0]const u8, writer: *I
     const source_hash = nvfury.build_cache.computeSourceHash(allocator, actual_source) catch [_]u8{'0'} ** 64;
 
     // Get current timestamp
-    const ts = std.posix.clock_gettime(.REALTIME) catch std.posix.timespec{ .sec = 0, .nsec = 0 };
+    var ts: std.os.linux.timespec = .{ .sec = 0, .nsec = 0 };
+    _ = std.os.linux.clock_gettime(.REALTIME, &ts);
 
     // Determine compiler used
     const kernel_cc = nvfury.builder.detectKernelCompiler();
@@ -929,7 +930,8 @@ fn cmdCheckUpdate(allocator: std.mem.Allocator, args: []const [:0]const u8, writ
             defer c.deinit(allocator);
 
             // Get current time
-            const ts = std.posix.clock_gettime(.REALTIME) catch std.posix.timespec{ .sec = 0, .nsec = 0 };
+            var ts: std.os.linux.timespec = .{ .sec = 0, .nsec = 0 };
+            _ = std.os.linux.clock_gettime(.REALTIME, &ts);
             const age = ts.sec - c.last_check;
 
             // If checked recently (within interval), show cached result
@@ -1044,7 +1046,8 @@ fn cmdUpdateDaemon(allocator: std.mem.Allocator, args: []const [:0]const u8, wri
             var c = cached;
             defer c.deinit(allocator);
 
-            const ts = std.posix.clock_gettime(.REALTIME) catch std.posix.timespec{ .sec = 0, .nsec = 0 };
+            var ts: std.os.linux.timespec = .{ .sec = 0, .nsec = 0 };
+            _ = std.os.linux.clock_gettime(.REALTIME, &ts);
             const age = ts.sec - c.last_check;
 
             var dur_buf: [64]u8 = undefined;
@@ -1310,7 +1313,7 @@ fn cmdProfile(allocator: std.mem.Allocator, args: []const [:0]const u8, writer: 
                 }
                 return;
             };
-            defer std.posix.close(fd);
+            defer _ = std.c.close(fd);
 
             const write_result = std.c.write(fd, conf.ptr, conf.len);
             if (write_result < 0) {

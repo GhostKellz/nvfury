@@ -13,7 +13,7 @@ const nvfury = @import("nvfury");
 
 test "version string format" {
     const version = nvfury.version;
-    try testing.expectEqualStrings("0.2.0", version.string);
+    try testing.expectEqualStrings("0.2.2", version.string);
 
     // Verify string matches components
     var buf: [16]u8 = undefined;
@@ -28,7 +28,7 @@ test "version string format" {
 test "version components" {
     try testing.expectEqual(@as(u32, 0), nvfury.version.major);
     try testing.expectEqual(@as(u32, 2), nvfury.version.minor);
-    try testing.expectEqual(@as(u32, 0), nvfury.version.patch);
+    try testing.expectEqual(@as(u32, 2), nvfury.version.patch);
 }
 
 // =============================================================================
@@ -82,17 +82,17 @@ test "minimum driver version: valid format" {
     const min_version = nvfury.min_open_driver_version;
     // Should have at least one dot
     try testing.expect(std.mem.indexOf(u8, min_version, ".") != null);
-    // Should start with a digit (5 for 580.0.0)
+    // Should start with a digit (5 for 595.0.0)
     try testing.expect(min_version[0] >= '0' and min_version[0] <= '9');
-    // Should be 580.0.0
-    try testing.expectEqualStrings("580.0.0", min_version);
+    // Should be 595.0.0
+    try testing.expectEqualStrings("595.0.0", min_version);
 }
 
 test "minimum driver version: parsed correctly" {
     const result = nvfury.fetch.parseVersion(nvfury.min_open_driver_version);
     try testing.expect(result != null);
     if (result) |v| {
-        try testing.expectEqual(@as(u32, 580), v.major);
+        try testing.expectEqual(@as(u32, 595), v.major);
     }
 }
 

@@ -128,7 +128,8 @@ pub fn install(allocator: std.mem.Allocator, options: InstallOptions) !InstallRe
 /// Create backup of existing modules
 pub fn createBackup(allocator: std.mem.Allocator, kernel_version: []const u8, backup_dir: []const u8) ![]u8 {
     // Create timestamped backup directory
-    const ts = std.posix.clock_gettime(.REALTIME) catch return error.SystemResources;
+    var ts: std.os.linux.timespec = undefined;
+    if (std.os.linux.clock_gettime(.REALTIME, &ts) != 0) return error.SystemResources;
     const timestamp: i64 = ts.sec;
     const backup_path = try std.fmt.allocPrint(allocator, "{s}/{s}-{d}/", .{ backup_dir, kernel_version, timestamp });
     errdefer allocator.free(backup_path);
